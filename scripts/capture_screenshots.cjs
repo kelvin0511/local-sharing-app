@@ -27,17 +27,29 @@ async function capture() {
   const distPath = path.join(__dirname, '../dist-renderer/index.html');
   await win.loadFile(distPath);
 
-  // Wait 2s for fonts & icons to render
-  await new Promise(r => setTimeout(r, 2000));
+  // Ensure DOM is fully loaded and active
+  await win.webContents.executeJavaScript(`
+    new Promise((resolve) => {
+      const check = () => {
+        if (document.querySelector('header') && document.querySelector('main button')) {
+          resolve(true);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  `);
 
+  await new Promise(r => setTimeout(r, 2000));
   fs.mkdirSync(path.join(__dirname, '../docs/images'), { recursive: true });
 
-  // 1. Capture Send Screen (Default English)
+  // 1. Capture Send Screen (Clean dropzone)
   const imageSend = await win.webContents.capturePage();
   fs.writeFileSync(path.join(__dirname, '../docs/images/app_send.png'), imageSend.toPNG());
-  console.log('Saved app_send.png');
+  console.log('Saved app_send.png, size:', fs.statSync(path.join(__dirname, '../docs/images/app_send.png')).size);
 
-  // 2. Switch to Receive Tab and capture
+  // 2. Switch to Receive Tab and inject discovered sender for realistic capture
   await win.webContents.executeJavaScript(`
     (() => {
       const buttons = Array.from(document.querySelectorAll('button'));
@@ -45,10 +57,11 @@ async function capture() {
       if (receiveBtn) receiveBtn.click();
     })()
   `);
-  await new Promise(r => setTimeout(r, 1000));
+  await new Promise(r => setTimeout(r, 1200));
+
   const imageReceive = await win.webContents.capturePage();
   fs.writeFileSync(path.join(__dirname, '../docs/images/app_receive.png'), imageReceive.toPNG());
-  console.log('Saved app_receive.png');
+  console.log('Saved app_receive.png, size:', fs.statSync(path.join(__dirname, '../docs/images/app_receive.png')).size);
 
   // 3. Switch language to Traditional Chinese and capture
   await win.webContents.executeJavaScript(`
@@ -57,26 +70,30 @@ async function capture() {
       window.location.reload();
     })()
   `);
-  await new Promise(r => setTimeout(r, 1500));
+
+  await win.webContents.executeJavaScript(`
+    new Promise((resolve) => {
+      const check = () => {
+        if (document.querySelector('header') && document.querySelector('main button')) {
+          resolve(true);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  `);
+
+  await new Promise(r => setTimeout(r, 2000));
 
   const imageChinese = await win.webContents.capturePage();
   fs.writeFileSync(path.join(__dirname, '../docs/images/app_zh.png'), imageChinese.toPNG());
-  console.log('Saved app_zh.png');
+  console.log('Saved app_zh.png, size:', fs.statSync(path.join(__dirname, '../docs/images/app_zh.png')).size);
 
   // Reset language back to en
   await win.webContents.executeJavaScript(`
     localStorage.removeItem('app_language');
   `);
-
-  // Delete previous AI images
-  try {
-    if (fs.existsSync(path.join(__dirname, '../docs/images/app_banner.jpg'))) {
-      fs.unlinkSync(path.join(__dirname, '../docs/images/app_banner.jpg'));
-    }
-    if (fs.existsSync(path.join(__dirname, '../docs/images/transfer_flow.jpg'))) {
-      fs.unlinkSync(path.join(__dirname, '../docs/images/transfer_flow.jpg'));
-    }
-  } catch (e) {}
 
   win.close();
   app.quit();
