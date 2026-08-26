@@ -1,0 +1,950 @@
+import React, { useState, useEffect } from 'react';
+import {
+  UploadCloud,
+  Download,
+  FilePlus,
+  FolderPlus,
+  Trash2,
+  Copy,
+  Check,
+  Send,
+  XCircle,
+  CheckCircle2,
+  AlertCircle,
+  Network,
+  Share2,
+  Loader2,
+  HardDrive,
+  File,
+  FileText,
+  Image as ImageIcon,
+  Video,
+  Music,
+  Archive,
+  Code2,
+  Zap,
+  ArrowRight,
+  FolderOpen,
+  Radio,
+  RefreshCw,
+  Laptop
+} from 'lucide-react';
+import {
+  DiscoveredSender,
+  NetworkInterfaceInfo,
+  ProgressUpdate,
+  ReceiverDownloadResult,
+  ReceiverProgressUpdate,
+  TransferManifest,
+  TransferSessionInfo,
+  TransferState
+} from '../core/types';
+import { StateChangeEvent } from '../core/state';
+
+interface SelectedFile {
+  name: string;
+  path: string;
+  size: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec <= 0) return '0 MB/s';
+  const mbps = bytesPerSec / (1024 * 1024);
+  if (mbps < 0.1) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${mbps.toFixed(1)} MB/s`;
+}
+
+function formatEta(seconds: number): string {
+  if (seconds <= 0) return '即將完成...';
+  if (seconds < 60) return `剩餘約 ${seconds} 秒`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `剩餘約 ${mins} 分 ${secs} 秒`;
+}
+
+function getFileIcon(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
+    return <ImageIcon className="w-5 h-5 text-emerald-400 shrink-0" />;
+  }
+  if (['mp4', 'mkv', 'avi', 'mov', 'webm', 'wmv'].includes(ext)) {
+    return <Video className="w-5 h-5 text-purple-400 shrink-0" />;
+  }
+  if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(ext)) {
+    return <Music className="w-5 h-5 text-pink-400 shrink-0" />;
+  }
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext)) {
+    return <Archive className="w-5 h-5 text-amber-400 shrink-0" />;
+  }
+  if (['ts', 'tsx', 'js', 'jsx', 'json', 'py', 'rs', 'go', 'cpp', 'c', 'html', 'css'].includes(ext)) {
+    return <Code2 className="w-5 h-5 text-cyan-400 shrink-0" />;
+  }
+  if (['pdf', 'doc', 'docx', 'txt', 'md', 'rtf', 'odt', 'csv', 'xlsx'].includes(ext)) {
+    return <FileText className="w-5 h-5 text-blue-400 shrink-0" />;
+  }
+  return <File className="w-5 h-5 text-slate-400 shrink-0" />;
+}
+
+const electronAPI = (window as unknown as { electronAPI?: typeof import('../preload/index').ElectronAPI }).electronAPI;
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'send' | 'receive'>('send');
+
+  // ===================== SENDER STATE =====================
+  const [interfaces, setInterfaces] = useState<NetworkInterfaceInfo[]>([]);
+  const [selectedIp, setSelectedIp] = useState<string>('');
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState<boolean>(false);
+  const [state, setState] = useState<TransferState>('IDLE');
+  const [session, setSession] = useState<TransferSessionInfo | null>(null);
+  const [progress, setProgress] = useState<ProgressUpdate | null>(null);
+  const [codeCopied, setCodeCopied] = useState<boolean>(false);
+  const [urlCopied, setUrlCopied] = useState<boolean>(false);
+  const [senderError, setSenderError] = useState<string | null>(null);
+
+  // ===================== RECEIVER STATE =====================
+  const [inputCode, setInputCode] = useState<string>('');
+  const [discoveredSenders, setDiscoveredSenders] = useState<DiscoveredSender[]>([]);
+  const [selectedSender, setSelectedSender] = useState<DiscoveredSender | null>(null);
+  const [senderManifest, setSenderManifest] = useState<TransferManifest | null>(null);
+  const [saveDirectory, setSaveDirectory] = useState<string>('');
+  const [isResolvingCode, setIsResolvingCode] = useState<boolean>(false);
+  const [receiverMode, setReceiverMode] = useState<'IDLE' | 'CONFIRM' | 'DOWNLOADING' | 'COMPLETED' | 'ERROR'>('IDLE');
+  const [receiverProgress, setReceiverProgress] = useState<ReceiverProgressUpdate | null>(null);
+  const [receiverResult, setReceiverResult] = useState<ReceiverDownloadResult | null>(null);
+  const [receiverError, setReceiverError] = useState<string | null>(null);
+
+  // ===================== LIFECYCLE & EVENT LISTENERS =====================
+  useEffect(() => {
+    if (!electronAPI) return;
+
+    // Load available network adapters
+    electronAPI.getNetworkInterfaces().then((netList) => {
+      setInterfaces(netList);
+      const rec = netList.find((n) => n.isRecommended);
+      if (rec) setSelectedIp(rec.address);
+      else if (netList.length > 0) setSelectedIp(netList[0].address);
+    });
+
+    // Start background LAN discovery for receiver
+    electronAPI.startDiscovery();
+
+    // Sender listeners
+    const unsubState = electronAPI.onTransferStateChange((e: StateChangeEvent) => {
+      setState(e.currentState);
+      if (e.currentState === 'FAILED' && e.reason) {
+        setSenderError(e.reason);
+      }
+    });
+
+    const unsubProgress = electronAPI.onTransferProgress((p: ProgressUpdate) => {
+      setProgress(p);
+    });
+
+    const unsubCompleted = electronAPI.onTransferCompleted(() => {
+      setState('COMPLETED');
+    });
+
+    // Receiver listeners
+    const unsubDiscovered = electronAPI.onDiscoveredSenders((senders) => {
+      setDiscoveredSenders(senders);
+    });
+
+    const unsubReceiverProgress = electronAPI.onReceiverProgress((p) => {
+      setReceiverProgress(p);
+    });
+
+    const unsubReceiverCompleted = electronAPI.onReceiverCompleted((result) => {
+      setReceiverResult(result);
+      setReceiverMode('COMPLETED');
+    });
+
+    const unsubReceiverError = electronAPI.onReceiverError((err) => {
+      setReceiverError(err.error);
+      setReceiverMode('ERROR');
+    });
+
+    const unsubReceiverCancelled = electronAPI.onReceiverCancelled(() => {
+      setReceiverMode('IDLE');
+    });
+
+    return () => {
+      unsubState();
+      unsubProgress();
+      unsubCompleted();
+      unsubDiscovered();
+      unsubReceiverProgress();
+      unsubReceiverCompleted();
+      unsubReceiverError();
+      unsubReceiverCancelled();
+      electronAPI?.stopDiscovery();
+    };
+  }, []);
+
+  // ===================== SENDER HANDLERS =====================
+  const handleAddFiles = async () => {
+    if (!electronAPI) return;
+    const result = await electronAPI.openFileDialog();
+    if (result.files.length > 0) {
+      setSelectedFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.path));
+        const newFiles = result.files.filter((f) => !existing.has(f.path));
+        return [...prev, ...newFiles];
+      });
+      if (state === 'IDLE') setState('FILES_SELECTED');
+    }
+  };
+
+  const handleAddFolder = async () => {
+    if (!electronAPI) return;
+    const result = await electronAPI.openDirectoryDialog();
+    if (result.files.length > 0) {
+      setSelectedFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.path));
+        const newFiles = result.files.filter((f) => !existing.has(f.path));
+        return [...prev, ...newFiles];
+      });
+      if (state === 'IDLE') setState('FILES_SELECTED');
+    }
+  };
+
+  const handleRemoveFile = (pathToRemove: string) => {
+    const updated = selectedFiles.filter((f) => f.path !== pathToRemove);
+    setSelectedFiles(updated);
+    if (updated.length === 0 && state === 'FILES_SELECTED') {
+      setState('IDLE');
+    }
+  };
+
+  const handleStartShare = async () => {
+    if (!electronAPI || selectedFiles.length === 0) return;
+    setSenderError(null);
+    try {
+      const filePaths = selectedFiles.map((f) => f.path);
+      const sessionInfo = await electronAPI.startTransfer(filePaths, { selectedIp });
+      setSession(sessionInfo);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSenderError(msg);
+      setState('FAILED');
+    }
+  };
+
+  const handleCancelShare = async () => {
+    if (!electronAPI) return;
+    await electronAPI.cancelTransfer();
+    setState('IDLE');
+    setSession(null);
+    setProgress(null);
+  };
+
+  const handleResetSender = () => {
+    setSelectedFiles([]);
+    setSession(null);
+    setProgress(null);
+    setSenderError(null);
+    setState('IDLE');
+  };
+
+  const handleCopyCode = () => {
+    if (!session?.pairingCode) return;
+    navigator.clipboard.writeText(session.pairingCode);
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 2000);
+  };
+
+  const handleCopyUrl = () => {
+    if (!session?.shareUrl) return;
+    navigator.clipboard.writeText(session.shareUrl);
+    setUrlCopied(true);
+    setTimeout(() => setUrlCopied(false), 2000);
+  };
+
+  // ===================== RECEIVER HANDLERS =====================
+  const handleSelectDiscoveredSender = async (sender: DiscoveredSender) => {
+    setSelectedSender(sender);
+    setIsResolvingCode(true);
+    setReceiverError(null);
+
+    try {
+      if (electronAPI) {
+        const manifest = await electronAPI.fetchManifest(sender.ip, sender.port, sender.token);
+        setSenderManifest(manifest);
+        setReceiverMode('CONFIRM');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setReceiverError(msg);
+      setReceiverMode('ERROR');
+    } finally {
+      setIsResolvingCode(false);
+    }
+  };
+
+  const handleResolveCode = async () => {
+    const cleanCode = inputCode.trim().toUpperCase();
+    if (!cleanCode || !electronAPI) return;
+
+    setIsResolvingCode(true);
+    setReceiverError(null);
+
+    try {
+      // 1. Check if sender exists in discovered list
+      const matched = discoveredSenders.find((s) => s.code.toUpperCase() === cleanCode);
+      if (matched) {
+        await handleSelectDiscoveredSender(matched);
+        return;
+      }
+
+      // 2. Query main process resolve
+      const resolved = await electronAPI.resolveCode(cleanCode);
+      if (resolved) {
+        await handleSelectDiscoveredSender(resolved);
+        return;
+      }
+
+      throw new Error(`找不到配對碼為 "${cleanCode}" 的傳送裝置。請確保兩部裝置連接到相同的 Wi-Fi / 局域網，且傳送端已點擊開始傳送。`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setReceiverError(msg);
+      setReceiverMode('ERROR');
+    } finally {
+      setIsResolvingCode(false);
+    }
+  };
+
+  const handleBrowseSaveDirectory = async () => {
+    if (!electronAPI) return;
+    const dir = await electronAPI.selectSaveDirectory();
+    if (dir) {
+      setSaveDirectory(dir);
+    }
+  };
+
+  const handleStartDownload = async () => {
+    if (!electronAPI || !selectedSender) return;
+
+    let targetDir = saveDirectory;
+    if (!targetDir) {
+      // Prompt user to select directory
+      const selected = await electronAPI.selectSaveDirectory();
+      if (!selected) return; // User cancelled directory selection
+      targetDir = selected;
+      setSaveDirectory(selected);
+    }
+
+    setReceiverMode('DOWNLOADING');
+    setReceiverProgress(null);
+    setReceiverError(null);
+
+    try {
+      await electronAPI.startDownload(selectedSender, targetDir);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setReceiverError(msg);
+      setReceiverMode('ERROR');
+    }
+  };
+
+  const handleCancelDownload = async () => {
+    if (!electronAPI) return;
+    await electronAPI.cancelDownload();
+    setReceiverMode('IDLE');
+  };
+
+  const handleOpenDownloadedFolder = async () => {
+    if (!electronAPI || !receiverResult?.saveDirectory) return;
+    await electronAPI.openFolder(receiverResult.saveDirectory);
+  };
+
+  const handleResetReceiver = () => {
+    setInputCode('');
+    setSelectedSender(null);
+    setSenderManifest(null);
+    setReceiverProgress(null);
+    setReceiverResult(null);
+    setReceiverError(null);
+    setReceiverMode('IDLE');
+  };
+
+  const totalBytes = selectedFiles.reduce((acc, f) => acc + f.size, 0);
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
+      {/* ================= HEADER & TOP NAVIGATION ================= */}
+      <header className="flex items-center justify-between px-6 py-3.5 bg-slate-900/90 border-b border-slate-800 backdrop-blur shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+            <Share2 className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-base font-bold text-slate-100 tracking-tight leading-none">局域網檔案快傳</h1>
+            <p className="text-xs text-slate-400 mt-1">高速局域網直連傳輸 · 零雲端中轉</p>
+          </div>
+        </div>
+
+        {/* MODE SWITCHER TABS */}
+        <div className="flex items-center bg-slate-800/90 p-1 rounded-xl border border-slate-700/60 shadow-inner">
+          <button
+            onClick={() => setActiveTab('send')}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeTab === 'send'
+                ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/20'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <UploadCloud className="w-4 h-4" />
+            傳送檔案
+          </button>
+          <button
+            onClick={() => setActiveTab('receive')}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all relative ${
+              activeTab === 'receive'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-indigo-500/20'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Download className="w-4 h-4" />
+            接收檔案
+            {discoveredSenders.length > 0 && (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse absolute -top-0.5 -right-0.5" />
+            )}
+          </button>
+        </div>
+
+        {/* NETWORK IP PILL */}
+        <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs">
+          <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+          <span className="text-slate-400 font-medium">本地 IP:</span>
+          <span className="text-cyan-300 font-mono font-semibold">{selectedIp || '127.0.0.1'}</span>
+        </div>
+      </header>
+
+      {/* ================= MAIN CONTENT ================= */}
+      <main className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
+        {activeTab === 'send' ? (
+          /* ======================================================== */
+          /*                       SEND TAB                           */
+          /* ======================================================== */
+          <div className="w-full max-w-2xl flex flex-col h-full justify-between">
+            {/* 1. IDLE & FILE SELECTION */}
+            {(state === 'IDLE' || state === 'FILES_SELECTED') && (
+              <div className="flex flex-col h-full justify-between gap-4">
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDraggingOver(true); }}
+                  onDragLeave={() => setIsDraggingOver(false)}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    setIsDraggingOver(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      const filesArray: SelectedFile[] = Array.from(e.dataTransfer.files).map((f) => ({
+                        name: f.name,
+                        path: (f as unknown as { path?: string }).path || f.name,
+                        size: f.size
+                      }));
+                      setSelectedFiles((prev) => [...prev, ...filesArray]);
+                      setState('FILES_SELECTED');
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all duration-200 cursor-pointer ${
+                    isDraggingOver
+                      ? 'border-cyan-400 bg-cyan-950/20 scale-[1.01]'
+                      : 'border-slate-800 hover:border-slate-700 bg-slate-900/40'
+                  } ${selectedFiles.length > 0 ? 'py-5' : 'flex-1'}`}
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-3 text-cyan-400">
+                    <UploadCloud className="w-7 h-7" />
+                  </div>
+                  <h3 className="text-base font-semibold text-slate-200">拖曳檔案或資料夾至此</h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                    無檔案大小限制 · 局域網高速直傳電腦或手機 · 無需上傳雲端
+                  </p>
+
+                  <div className="flex items-center gap-3 mt-4">
+                    <button
+                      onClick={handleAddFiles}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                    >
+                      <FilePlus className="w-4 h-4 text-cyan-400" />
+                      選擇檔案
+                    </button>
+                    <button
+                      onClick={handleAddFolder}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                    >
+                      <FolderPlus className="w-4 h-4 text-blue-400" />
+                      選擇資料夾
+                    </button>
+                  </div>
+                </div>
+
+                {/* File List */}
+                {selectedFiles.length > 0 && (
+                  <div className="flex-1 flex flex-col min-h-0 bg-slate-900/60 border border-slate-800/80 rounded-2xl overflow-hidden p-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-300">已選檔案</span>
+                        <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-medium border border-cyan-500/20">
+                          共 {selectedFiles.length} 個檔案
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-slate-400">
+                        總計大小: <span className="text-slate-200 font-semibold">{formatBytes(totalBytes)}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                      {selectedFiles.map((file) => (
+                        <div
+                          key={file.path}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700/40 text-xs transition"
+                        >
+                          <div className="flex items-center gap-3 min-w-0 pr-3">
+                            {getFileIcon(file.name)}
+                            <div className="min-w-0">
+                              <p className="font-medium text-slate-200 truncate">{file.name}</p>
+                              <p className="text-[10px] text-slate-400">{formatBytes(file.size)}</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveFile(file.path)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                            title="移除此檔案"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Bottom Action */}
+                    <div className="pt-3 border-t border-slate-800 flex items-center justify-between mt-2">
+                      <button
+                        onClick={() => setSelectedFiles([])}
+                        className="text-xs text-slate-400 hover:text-slate-200 underline"
+                      >
+                        全部清除
+                      </button>
+                      <button
+                        onClick={handleStartShare}
+                        className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition transform active:scale-95"
+                      >
+                        <Send className="w-4 h-4" />
+                        開始傳送 ({formatBytes(totalBytes)})
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 2. WAITING FOR RECEIVER (SHOW 5-CHAR CODE & QR) */}
+            {(state === 'WAITING_FOR_RECEIVER' || state === 'RECEIVER_CONNECTED' || state === 'RECEIVER_CONFIRMED') && session && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center animate-in fade-in zoom-in-95 duration-200">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-medium mb-4">
+                  <Radio className="w-3.5 h-3.5 animate-pulse" />
+                  正在局域網廣播中
+                </div>
+
+                <h2 className="text-xl font-bold text-slate-100">傳送已就緒</h2>
+                <p className="text-xs text-slate-400 mt-1 max-w-md">
+                  在接收端電腦開啟本程式並輸入下方 5 位配對碼，或直接掃描 QR Code。
+                </p>
+
+                {/* PAIRING CODE CARD */}
+                <div className="my-6 p-6 rounded-2xl bg-slate-800/80 border border-cyan-500/30 shadow-2xl flex flex-col items-center w-full max-w-sm">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                    快速配對碼
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-4xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-300 to-blue-400 font-mono">
+                      {session.pairingCode}
+                    </span>
+                    <button
+                      onClick={handleCopyCode}
+                      className="p-2 rounded-xl bg-slate-700/60 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                      title="複製配對碼"
+                    >
+                      {codeCopied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* QR CODE & DETAILS */}
+                <div className="flex flex-col md:flex-row items-center gap-6 p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+                  {session.qrCodeDataUrl && (
+                    <div className="p-2 bg-white rounded-xl shadow-md">
+                      <img src={session.qrCodeDataUrl} alt="Transfer QR Code" className="w-28 h-28" />
+                    </div>
+                  )}
+                  <div className="text-left text-xs space-y-1.5">
+                    <p className="text-slate-400">
+                      檔案總計: <span className="text-slate-200 font-semibold">{session.files.length} 個檔案 ({formatBytes(session.totalBytes)})</span>
+                    </p>
+                    <p className="text-slate-400">
+                      區域 IP 與連接埠: <span className="text-slate-200 font-mono">{session.ip}:{session.port}</span>
+                    </p>
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        onClick={handleCopyUrl}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium border border-slate-700 transition"
+                      >
+                        {urlCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        複製分享連結
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex items-center gap-3">
+                  <button
+                    onClick={handleCancelShare}
+                    className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
+                  >
+                    取消傳送
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 3. SENDER TRANSFERRING STATE */}
+            {state === 'TRANSFERRING' && progress && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-4 text-cyan-400">
+                  <Zap className="w-7 h-7 animate-pulse" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-100">正在傳送檔案...</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  正在傳送第 {progress.currentFileIndex} / {progress.totalFiles} 個檔案：<span className="text-slate-200 font-semibold">{progress.currentFileName}</span>
+                </p>
+
+                {/* Progress Bar */}
+                <div className="w-full max-w-md my-6 space-y-2">
+                  <div className="flex justify-between text-xs text-slate-400">
+                    <span>{formatBytes(progress.totalBytesTransferred)} / {formatBytes(progress.totalBytes)}</span>
+                    <span className="font-bold text-cyan-400">{progress.percentage.toFixed(1)}%</span>
+                  </div>
+                  <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden p-0.5">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-300"
+                      style={{ width: `${progress.percentage}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[11px] text-slate-400 pt-1">
+                    <span className="font-medium text-emerald-400">{formatSpeed(progress.speedBps)}</span>
+                    <span>{formatEta(progress.etaSeconds)}</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleCancelShare}
+                  className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 hover:text-rose-300 text-slate-400 text-xs font-semibold border border-slate-700 transition"
+                >
+                  中止傳送
+                </button>
+              </div>
+            )}
+
+            {/* 4. SENDER COMPLETED STATE */}
+            {state === 'COMPLETED' && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center">
+                <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4 text-emerald-400">
+                  <CheckCircle2 className="w-8 h-8" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-100">傳送完成！</h2>
+                <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                  所有檔案已成功傳送並完成寫入驗證。
+                </p>
+
+                <button
+                  onClick={handleResetSender}
+                  className="mt-6 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition"
+                >
+                  傳送更多檔案
+                </button>
+              </div>
+            )}
+
+            {/* ERROR NOTIFICATION */}
+            {senderError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between text-xs text-rose-300">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{senderError}</span>
+                </div>
+                <button onClick={() => setSenderError(null)} className="text-rose-400 hover:text-rose-200">
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ======================================================== */
+          /*                     RECEIVE TAB                          */
+          /* ======================================================== */
+          <div className="w-full max-w-2xl flex flex-col h-full justify-between">
+            {/* 1. RECEIVER IDLE (CODE INPUT + DISCOVERED SENDERS) */}
+            {receiverMode === 'IDLE' && (
+              <div className="flex flex-col h-full justify-between gap-4">
+                {/* Enter Pairing Code Card */}
+                <div className="p-6 rounded-3xl bg-slate-900/60 border border-slate-800 flex flex-col items-center text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-3 text-indigo-400">
+                    <Download className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-base font-bold text-slate-100">輸入配對碼</h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                    請輸入傳送端電腦畫面上顯示的 5 位英文數字代碼。
+                  </p>
+
+                  <div className="flex items-center gap-3 mt-5 w-full max-w-xs">
+                    <input
+                      type="text"
+                      maxLength={8}
+                      placeholder="例如 X2KTV"
+                      value={inputCode}
+                      onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleResolveCode(); }}
+                      className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-center text-lg font-mono font-bold tracking-widest text-cyan-300 uppercase focus:outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      onClick={handleResolveCode}
+                      disabled={!inputCode.trim() || isResolvingCode}
+                      className="px-5 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1.5"
+                    >
+                      {isResolvingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+                      連線
+                    </button>
+                  </div>
+                </div>
+
+                {/* Auto-Discovered LAN Devices */}
+                <div className="flex-1 flex flex-col min-h-0 bg-slate-900/40 border border-slate-800/80 rounded-3xl p-5 overflow-hidden">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
+                    <div className="flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      <span className="text-xs font-bold text-slate-200">局域網中已發現的傳送端</span>
+                    </div>
+                    <span className="text-[11px] text-slate-400">自動偵測中</span>
+                  </div>
+
+                  {discoveredSenders.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
+                      <Laptop className="w-10 h-10 text-slate-700 mb-2" />
+                      <p className="text-xs text-slate-400">正在搜尋局域網中的傳送端...</p>
+                      <p className="text-[11px] text-slate-500 mt-1">在另一部裝置開始傳送檔案，此處將即時顯示。</p>
+                    </div>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                      {discoveredSenders.map((sender) => (
+                        <div
+                          key={`${sender.code}_${sender.ip}`}
+                          className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 transition cursor-pointer group"
+                          onClick={() => handleSelectDiscoveredSender(sender)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                              <Laptop className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs font-bold text-slate-200">{sender.senderName}</p>
+                                <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-mono text-[10px] font-bold border border-cyan-500/20">
+                                  {sender.code}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400">
+                                共 {sender.fileCount} 個檔案 · {formatBytes(sender.totalBytes)} · {sender.ip}
+                              </p>
+                            </div>
+                          </div>
+
+                          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 group-hover:bg-blue-500 text-white text-xs font-semibold transition">
+                            <Download className="w-3.5 h-3.5" />
+                            接收
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 2. RECEIVER CONFIRM & CHOOSE DESTINATION FOLDER */}
+            {receiverMode === 'CONFIRM' && senderManifest && (
+              <div className="flex-1 flex flex-col justify-between bg-slate-900/60 border border-slate-800 rounded-3xl p-6">
+                <div>
+                  <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-100">準備下載</h3>
+                      <p className="text-xs text-slate-400">
+                        來自：<span className="text-slate-200 font-semibold">{senderManifest.senderName || 'LAN Device'}</span> ({senderManifest.fileCount} 個檔案，共 {formatBytes(senderManifest.totalBytes)})
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-lg bg-cyan-500/10 text-cyan-300 font-mono text-xs font-bold border border-cyan-500/20">
+                      配對碼: {senderManifest.pairingCode}
+                    </span>
+                  </div>
+
+                  {/* Destination Folder Selector */}
+                  <div className="my-4 p-4 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex flex-col gap-2">
+                    <span className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                      <FolderOpen className="w-4 h-4 text-cyan-400" />
+                      儲存檔案至：
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs font-mono text-slate-300 truncate">
+                        {saveDirectory || '請選擇儲存資料夾...'}
+                      </div>
+                      <button
+                        onClick={handleBrowseSaveDirectory}
+                        className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold transition"
+                      >
+                        選擇資料夾
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Incoming Files Preview */}
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {senderManifest.files.map((f) => (
+                      <div
+                        key={f.id}
+                        className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/40 border border-slate-800 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 pr-3">
+                          {getFileIcon(f.name)}
+                          <span className="text-slate-200 font-medium truncate">{f.name}</span>
+                        </div>
+                        <span className="text-slate-400 shrink-0">{formatBytes(f.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
+                  <button
+                    onClick={() => setReceiverMode('IDLE')}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+                  >
+                    返回
+                  </button>
+                  <button
+                    onClick={handleStartDownload}
+                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/25 transition transform active:scale-95"
+                  >
+                    <Download className="w-4 h-4" />
+                    下載全部檔案 ({formatBytes(senderManifest.totalBytes)})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 3. RECEIVER DOWNLOADING PROGRESS */}
+            {receiverMode === 'DOWNLOADING' && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 text-indigo-400">
+                  <Download className="w-7 h-7 animate-bounce" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-100">正在下載檔案...</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  {receiverProgress ? (
+                    <>正在下載第 {receiverProgress.currentFileIndex} / {receiverProgress.totalFiles} 個檔案：<span className="text-slate-200 font-semibold">{receiverProgress.currentFileName}</span></>
+                  ) : (
+                    '正在連線並建立傳輸通道...'
+                  )}
+                </p>
+
+                {/* Progress Bar */}
+                {receiverProgress && (
+                  <div className="w-full max-w-md my-6 space-y-2">
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>{formatBytes(receiverProgress.totalBytesDownloaded)} / {formatBytes(receiverProgress.totalBytes)}</span>
+                      <span className="font-bold text-indigo-400">{receiverProgress.percentage.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden p-0.5">
+                      <div
+                        className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-300"
+                        style={{ width: `${receiverProgress.percentage}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-slate-400 pt-1">
+                      <span className="font-medium text-emerald-400">{formatSpeed(receiverProgress.speedBps)}</span>
+                      <span>{formatEta(receiverProgress.etaSeconds)}</span>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleCancelDownload}
+                  className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 hover:text-rose-300 text-slate-400 text-xs font-semibold border border-slate-700 transition"
+                >
+                  取消下載
+                </button>
+              </div>
+            )}
+
+            {/* 4. RECEIVER COMPLETED STATE */}
+            {receiverMode === 'COMPLETED' && receiverResult && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center">
+                <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4 text-emerald-400">
+                  <CheckCircle2 className="w-8 h-8" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-100">所有檔案已下載完成！</h2>
+                <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                  共 {receiverResult.totalFiles} 個檔案（{formatBytes(receiverResult.totalBytes)}）已成功儲存至您所選的資料夾。
+                </p>
+
+                <div className="mt-6 flex items-center gap-3">
+                  <button
+                    onClick={handleOpenDownloadedFolder}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    在檔案總管中開啟
+                  </button>
+                  <button
+                    onClick={handleResetReceiver}
+                    className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
+                  >
+                    接收更多檔案
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 5. RECEIVER ERROR STATE */}
+            {receiverMode === 'ERROR' && (
+              <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-4 text-rose-400">
+                  <AlertCircle className="w-7 h-7" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-100">下載失敗</h2>
+                <p className="text-xs text-rose-300 mt-1 max-w-md">
+                  {receiverError || '無法連線至傳送端。'}
+                </p>
+
+                <button
+                  onClick={handleResetReceiver}
+                  className="mt-6 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                >
+                  重試
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
