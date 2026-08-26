@@ -14,7 +14,10 @@
     "build:electron": "tsc -p tsconfig.electron.json && node -e \"import('node:fs').then(fs => fs.writeFileSync('dist-electron/package.json', JSON.stringify({type:'commonjs'}, null, 2)))\"",
     "build": "npm run build:receiver && npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:all": "npm run build && electron-builder -mw"
   },
   "build": {
     "appId": "com.lanshare.app",
@@ -34,6 +37,13 @@
         "nsis",
         "portable"
       ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
     }
   },
   "keywords": [
