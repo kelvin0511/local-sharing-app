@@ -27,7 +27,9 @@ import {
   FolderOpen,
   Radio,
   RefreshCw,
-  Laptop
+  Laptop,
+  Globe,
+  ChevronDown
 } from 'lucide-react';
 import {
   DiscoveredSender,
@@ -40,6 +42,11 @@ import {
   TransferState
 } from '../core/types';
 import { StateChangeEvent } from '../core/state';
+import {
+  LANGUAGE_OPTIONS,
+  TRANSLATIONS,
+  SupportedLanguage
+} from './i18n';
 
 interface SelectedFile {
   name: string;
@@ -60,14 +67,6 @@ function formatSpeed(bytesPerSec: number): string {
   const mbps = bytesPerSec / (1024 * 1024);
   if (mbps < 0.1) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${mbps.toFixed(1)} MB/s`;
-}
-
-function formatEta(seconds: number): string {
-  if (seconds <= 0) return '即將完成...';
-  if (seconds < 60) return `剩餘約 ${seconds} 秒`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `剩餘約 ${mins} 分 ${secs} 秒`;
 }
 
 function getFileIcon(filename: string) {
@@ -96,7 +95,29 @@ function getFileIcon(filename: string) {
 const electronAPI = (window as unknown as { electronAPI?: typeof import('../preload/index').ElectronAPI }).electronAPI;
 
 export default function App() {
+  const [lang, setLang] = useState<SupportedLanguage>(() => {
+    return (localStorage.getItem('app_language') as SupportedLanguage) || 'en';
+  });
+  const [langMenuOpen, setLangMenuOpen] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'send' | 'receive'>('send');
+
+  const t = (key: string): string => {
+    return TRANSLATIONS[lang]?.[key] || TRANSLATIONS.en[key] || key;
+  };
+
+  const handleLanguageChange = (newLang: SupportedLanguage) => {
+    setLang(newLang);
+    localStorage.setItem('app_language', newLang);
+    setLangMenuOpen(false);
+  };
+
+  const formatEtaString = (seconds: number): string => {
+    if (seconds <= 0) return t('eta.almostDone');
+    if (seconds < 60) return `~${seconds} ${t('eta.secs')}`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `~${mins}m ${secs}s ${t('eta.minsSecs')}`;
+  };
 
   // ===================== SENDER STATE =====================
   const [interfaces, setInterfaces] = useState<NetworkInterfaceInfo[]>([]);
@@ -311,7 +332,7 @@ export default function App() {
         return;
       }
 
-      throw new Error(`找不到配對碼為 "${cleanCode}" 的傳送裝置。請確保兩部裝置連接到相同的 Wi-Fi / 局域網，且傳送端已點擊開始傳送。`);
+      throw new Error(`Cannot find sender with code "${cleanCode}". Please verify both devices are on the same LAN/Wi-Fi.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setReceiverError(msg);
@@ -376,6 +397,7 @@ export default function App() {
   };
 
   const totalBytes = selectedFiles.reduce((acc, f) => acc + f.size, 0);
+  const currentLang = LANGUAGE_OPTIONS.find((l) => l.code === lang) || LANGUAGE_OPTIONS[0];
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
@@ -386,8 +408,8 @@ export default function App() {
             <Share2 className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-base font-bold text-slate-100 tracking-tight leading-none">局域網檔案快傳</h1>
-            <p className="text-xs text-slate-400 mt-1">高速局域網直連傳輸 · 零雲端中轉</p>
+            <h1 className="text-base font-bold text-slate-100 tracking-tight leading-none">{t('app.title')}</h1>
+            <p className="text-xs text-slate-400 mt-1">{t('app.subtitle')}</p>
           </div>
         </div>
 
@@ -402,7 +424,7 @@ export default function App() {
             }`}
           >
             <UploadCloud className="w-4 h-4" />
-            傳送檔案
+            {t('nav.send')}
           </button>
           <button
             onClick={() => setActiveTab('receive')}
@@ -413,23 +435,64 @@ export default function App() {
             }`}
           >
             <Download className="w-4 h-4" />
-            接收檔案
+            {t('nav.receive')}
             {discoveredSenders.length > 0 && (
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse absolute -top-0.5 -right-0.5" />
             )}
           </button>
         </div>
 
-        {/* NETWORK IP PILL */}
-        <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs">
-          <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-          <span className="text-slate-400 font-medium">本地 IP:</span>
-          <span className="text-cyan-300 font-mono font-semibold">{selectedIp || '127.0.0.1'}</span>
+        {/* RIGHT CONTROLS: IP & LANGUAGE SELECTOR */}
+        <div className="flex items-center gap-3">
+          {/* NETWORK IP PILL */}
+          <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs">
+            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span className="text-slate-400 font-medium">{t('nav.ip')}:</span>
+            <span className="text-cyan-300 font-mono font-semibold">{selectedIp || '127.0.0.1'}</span>
+          </div>
+
+          {/* LANGUAGE SELECTOR DROPDOWN */}
+          <div className="relative">
+            <button
+              onClick={() => setLangMenuOpen(!langMenuOpen)}
+              className="flex items-center gap-1.5 bg-slate-800/90 hover:bg-slate-700/90 px-3 py-1.5 rounded-lg border border-slate-700/60 text-xs text-slate-200 transition"
+              title="Change Language"
+            >
+              <span>{currentLang.flag}</span>
+              <span className="font-medium">{currentLang.label}</span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+
+            {langMenuOpen && (
+              <div className="absolute right-0 mt-1.5 w-36 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-150">
+                {LANGUAGE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.code}
+                    onClick={() => handleLanguageChange(opt.code)}
+                    className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left transition ${
+                      lang === opt.code
+                        ? 'bg-cyan-500/20 text-cyan-300 font-semibold'
+                        : 'text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>{opt.flag}</span>
+                      <span>{opt.label}</span>
+                    </span>
+                    {lang === opt.code && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
       {/* ================= MAIN CONTENT ================= */}
-      <main className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
+      <main
+        className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center"
+        onClick={() => { if (langMenuOpen) setLangMenuOpen(false); }}
+      >
         {activeTab === 'send' ? (
           /* ======================================================== */
           /*                       SEND TAB                           */
@@ -464,9 +527,9 @@ export default function App() {
                   <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-3 text-cyan-400">
                     <UploadCloud className="w-7 h-7" />
                   </div>
-                  <h3 className="text-base font-semibold text-slate-200">拖曳檔案或資料夾至此</h3>
+                  <h3 className="text-base font-semibold text-slate-200">{t('send.dropzone.title')}</h3>
                   <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                    無檔案大小限制 · 局域網高速直傳電腦或手機 · 無需上傳雲端
+                    {t('send.dropzone.desc')}
                   </p>
 
                   <div className="flex items-center gap-3 mt-4">
@@ -475,14 +538,14 @@ export default function App() {
                       className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
                     >
                       <FilePlus className="w-4 h-4 text-cyan-400" />
-                      選擇檔案
+                      {t('send.btn.browseFiles')}
                     </button>
                     <button
                       onClick={handleAddFolder}
                       className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
                     >
                       <FolderPlus className="w-4 h-4 text-blue-400" />
-                      選擇資料夾
+                      {t('send.btn.browseFolder')}
                     </button>
                   </div>
                 </div>
@@ -492,13 +555,13 @@ export default function App() {
                   <div className="flex-1 flex flex-col min-h-0 bg-slate-900/60 border border-slate-800/80 rounded-2xl overflow-hidden p-4">
                     <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-slate-300">已選檔案</span>
+                        <span className="text-xs font-bold text-slate-300">{t('send.selected.title')}</span>
                         <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-medium border border-cyan-500/20">
-                          共 {selectedFiles.length} 個檔案
+                          {selectedFiles.length} {t('send.selected.count')}
                         </span>
                       </div>
                       <div className="text-xs font-medium text-slate-400">
-                        總計大小: <span className="text-slate-200 font-semibold">{formatBytes(totalBytes)}</span>
+                        {t('send.selected.total')} <span className="text-slate-200 font-semibold">{formatBytes(totalBytes)}</span>
                       </div>
                     </div>
 
@@ -518,7 +581,7 @@ export default function App() {
                           <button
                             onClick={() => handleRemoveFile(file.path)}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
-                            title="移除此檔案"
+                            title="Remove file"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -532,14 +595,14 @@ export default function App() {
                         onClick={() => setSelectedFiles([])}
                         className="text-xs text-slate-400 hover:text-slate-200 underline"
                       >
-                        全部清除
+                        {t('send.selected.clear')}
                       </button>
                       <button
                         onClick={handleStartShare}
                         className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition transform active:scale-95"
                       >
                         <Send className="w-4 h-4" />
-                        開始傳送 ({formatBytes(totalBytes)})
+                        {t('send.selected.start')} ({formatBytes(totalBytes)})
                       </button>
                     </div>
                   </div>
@@ -552,18 +615,18 @@ export default function App() {
               <div className="flex flex-col items-center justify-center flex-1 bg-slate-900/60 border border-slate-800 rounded-3xl p-8 text-center animate-in fade-in zoom-in-95 duration-200">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-medium mb-4">
                   <Radio className="w-3.5 h-3.5 animate-pulse" />
-                  正在局域網廣播中
+                  {t('send.waiting.broadcasting')}
                 </div>
 
-                <h2 className="text-xl font-bold text-slate-100">傳送已就緒</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('send.waiting.title')}</h2>
                 <p className="text-xs text-slate-400 mt-1 max-w-md">
-                  在接收端電腦開啟本程式並輸入下方 5 位配對碼，或直接掃描 QR Code。
+                  {t('send.waiting.desc')}
                 </p>
 
                 {/* PAIRING CODE CARD */}
                 <div className="my-6 p-6 rounded-2xl bg-slate-800/80 border border-cyan-500/30 shadow-2xl flex flex-col items-center w-full max-w-sm">
                   <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                    快速配對碼
+                    {t('send.waiting.codeLabel')}
                   </span>
                   <div className="flex items-center gap-3">
                     <span className="text-4xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-300 to-blue-400 font-mono">
@@ -572,7 +635,7 @@ export default function App() {
                     <button
                       onClick={handleCopyCode}
                       className="p-2 rounded-xl bg-slate-700/60 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-                      title="複製配對碼"
+                      title={t('send.waiting.copyCode')}
                     >
                       {codeCopied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
                     </button>
@@ -588,10 +651,10 @@ export default function App() {
                   )}
                   <div className="text-left text-xs space-y-1.5">
                     <p className="text-slate-400">
-                      檔案總計: <span className="text-slate-200 font-semibold">{session.files.length} 個檔案 ({formatBytes(session.totalBytes)})</span>
+                      {t('send.waiting.summary')} <span className="text-slate-200 font-semibold">{session.files.length} ({formatBytes(session.totalBytes)})</span>
                     </p>
                     <p className="text-slate-400">
-                      區域 IP 與連接埠: <span className="text-slate-200 font-mono">{session.ip}:{session.port}</span>
+                      {t('send.waiting.ipPort')} <span className="text-slate-200 font-mono">{session.ip}:{session.port}</span>
                     </p>
                     <div className="flex items-center gap-2 pt-2">
                       <button
@@ -599,7 +662,7 @@ export default function App() {
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium border border-slate-700 transition"
                       >
                         {urlCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        複製分享連結
+                        {t('send.waiting.copyLink')}
                       </button>
                     </div>
                   </div>
@@ -610,7 +673,7 @@ export default function App() {
                     onClick={handleCancelShare}
                     className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
                   >
-                    取消傳送
+                    {t('send.btn.cancel')}
                   </button>
                 </div>
               </div>
@@ -622,9 +685,9 @@ export default function App() {
                 <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-4 text-cyan-400">
                   <Zap className="w-7 h-7 animate-pulse" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-100">正在傳送檔案...</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('send.transferring.title')}</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  正在傳送第 {progress.currentFileIndex} / {progress.totalFiles} 個檔案：<span className="text-slate-200 font-semibold">{progress.currentFileName}</span>
+                  {t('send.transferring.streaming')} {progress.currentFileIndex} / {progress.totalFiles}: <span className="text-slate-200 font-semibold">{progress.currentFileName}</span>
                 </p>
 
                 {/* Progress Bar */}
@@ -641,7 +704,7 @@ export default function App() {
                   </div>
                   <div className="flex justify-between text-[11px] text-slate-400 pt-1">
                     <span className="font-medium text-emerald-400">{formatSpeed(progress.speedBps)}</span>
-                    <span>{formatEta(progress.etaSeconds)}</span>
+                    <span>{formatEtaString(progress.etaSeconds)}</span>
                   </div>
                 </div>
 
@@ -649,7 +712,7 @@ export default function App() {
                   onClick={handleCancelShare}
                   className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 hover:text-rose-300 text-slate-400 text-xs font-semibold border border-slate-700 transition"
                 >
-                  中止傳送
+                  {t('send.btn.abort')}
                 </button>
               </div>
             )}
@@ -660,16 +723,16 @@ export default function App() {
                 <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4 text-emerald-400">
                   <CheckCircle2 className="w-8 h-8" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-100">傳送完成！</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('send.completed.title')}</h2>
                 <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                  所有檔案已成功傳送並完成寫入驗證。
+                  {t('send.completed.desc')}
                 </p>
 
                 <button
                   onClick={handleResetSender}
                   className="mt-6 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition"
                 >
-                  傳送更多檔案
+                  {t('send.btn.sendMore')}
                 </button>
               </div>
             )}
@@ -700,16 +763,16 @@ export default function App() {
                   <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-3 text-indigo-400">
                     <Download className="w-6 h-6" />
                   </div>
-                  <h3 className="text-base font-bold text-slate-100">輸入配對碼</h3>
+                  <h3 className="text-base font-bold text-slate-100">{t('receive.code.title')}</h3>
                   <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                    請輸入傳送端電腦畫面上顯示的 5 位英文數字代碼。
+                    {t('receive.code.desc')}
                   </p>
 
                   <div className="flex items-center gap-3 mt-5 w-full max-w-xs">
                     <input
                       type="text"
                       maxLength={8}
-                      placeholder="例如 X2KTV"
+                      placeholder={t('receive.code.placeholder')}
                       value={inputCode}
                       onChange={(e) => setInputCode(e.target.value.toUpperCase())}
                       onKeyDown={(e) => { if (e.key === 'Enter') handleResolveCode(); }}
@@ -721,7 +784,7 @@ export default function App() {
                       className="px-5 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1.5"
                     >
                       {isResolvingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-                      連線
+                      {t('receive.btn.connect')}
                     </button>
                   </div>
                 </div>
@@ -731,16 +794,16 @@ export default function App() {
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
                     <div className="flex items-center gap-2">
                       <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                      <span className="text-xs font-bold text-slate-200">局域網中已發現的傳送端</span>
+                      <span className="text-xs font-bold text-slate-200">{t('receive.discovered.title')}</span>
                     </div>
-                    <span className="text-[11px] text-slate-400">自動偵測中</span>
+                    <span className="text-[11px] text-slate-400">{t('receive.discovered.badge')}</span>
                   </div>
 
                   {discoveredSenders.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
                       <Laptop className="w-10 h-10 text-slate-700 mb-2" />
-                      <p className="text-xs text-slate-400">正在搜尋局域網中的傳送端...</p>
-                      <p className="text-[11px] text-slate-500 mt-1">在另一部裝置開始傳送檔案，此處將即時顯示。</p>
+                      <p className="text-xs text-slate-400">{t('receive.discovered.emptyTitle')}</p>
+                      <p className="text-[11px] text-slate-500 mt-1">{t('receive.discovered.emptyDesc')}</p>
                     </div>
                   ) : (
                     <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -762,14 +825,14 @@ export default function App() {
                                 </span>
                               </div>
                               <p className="text-[11px] text-slate-400">
-                                共 {sender.fileCount} 個檔案 · {formatBytes(sender.totalBytes)} · {sender.ip}
+                                {sender.fileCount} {t('send.selected.count')} · {formatBytes(sender.totalBytes)} · {sender.ip}
                               </p>
                             </div>
                           </div>
 
                           <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 group-hover:bg-blue-500 text-white text-xs font-semibold transition">
                             <Download className="w-3.5 h-3.5" />
-                            接收
+                            {t('receive.btn.receive')}
                           </button>
                         </div>
                       ))}
@@ -785,13 +848,13 @@ export default function App() {
                 <div>
                   <div className="flex items-center justify-between pb-4 border-b border-slate-800">
                     <div>
-                      <h3 className="text-base font-bold text-slate-100">準備下載</h3>
+                      <h3 className="text-base font-bold text-slate-100">{t('receive.confirm.title')}</h3>
                       <p className="text-xs text-slate-400">
-                        來自：<span className="text-slate-200 font-semibold">{senderManifest.senderName || 'LAN Device'}</span> ({senderManifest.fileCount} 個檔案，共 {formatBytes(senderManifest.totalBytes)})
+                        {t('receive.confirm.from')} <span className="text-slate-200 font-semibold">{senderManifest.senderName || 'LAN Device'}</span> ({senderManifest.fileCount} {t('send.selected.count')}, {formatBytes(senderManifest.totalBytes)})
                       </p>
                     </div>
                     <span className="px-2.5 py-1 rounded-lg bg-cyan-500/10 text-cyan-300 font-mono text-xs font-bold border border-cyan-500/20">
-                      配對碼: {senderManifest.pairingCode}
+                      {t('receive.confirm.code')} {senderManifest.pairingCode}
                     </span>
                   </div>
 
@@ -799,17 +862,17 @@ export default function App() {
                   <div className="my-4 p-4 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex flex-col gap-2">
                     <span className="text-xs font-bold text-slate-300 flex items-center gap-2">
                       <FolderOpen className="w-4 h-4 text-cyan-400" />
-                      儲存檔案至：
+                      {t('receive.confirm.saveTo')}
                     </span>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs font-mono text-slate-300 truncate">
-                        {saveDirectory || '請選擇儲存資料夾...'}
+                        {saveDirectory || t('receive.confirm.savePrompt')}
                       </div>
                       <button
                         onClick={handleBrowseSaveDirectory}
                         className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold transition"
                       >
-                        選擇資料夾
+                        {t('receive.confirm.btnChooseFolder')}
                       </button>
                     </div>
                   </div>
@@ -837,14 +900,14 @@ export default function App() {
                     onClick={() => setReceiverMode('IDLE')}
                     className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
                   >
-                    返回
+                    {t('receive.confirm.btnBack')}
                   </button>
                   <button
                     onClick={handleStartDownload}
                     className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/25 transition transform active:scale-95"
                   >
                     <Download className="w-4 h-4" />
-                    下載全部檔案 ({formatBytes(senderManifest.totalBytes)})
+                    {t('receive.confirm.btnDownloadAll')} ({formatBytes(senderManifest.totalBytes)})
                   </button>
                 </div>
               </div>
@@ -856,12 +919,12 @@ export default function App() {
                 <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 text-indigo-400">
                   <Download className="w-7 h-7 animate-bounce" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-100">正在下載檔案...</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('receive.downloading.title')}</h2>
                 <p className="text-xs text-slate-400 mt-1">
                   {receiverProgress ? (
-                    <>正在下載第 {receiverProgress.currentFileIndex} / {receiverProgress.totalFiles} 個檔案：<span className="text-slate-200 font-semibold">{receiverProgress.currentFileName}</span></>
+                    <>{t('receive.downloading.progress')} {receiverProgress.currentFileIndex} / {receiverProgress.totalFiles}: <span className="text-slate-200 font-semibold">{receiverProgress.currentFileName}</span></>
                   ) : (
-                    '正在連線並建立傳輸通道...'
+                    t('receive.downloading.connecting')
                   )}
                 </p>
 
@@ -880,7 +943,7 @@ export default function App() {
                     </div>
                     <div className="flex justify-between text-[11px] text-slate-400 pt-1">
                       <span className="font-medium text-emerald-400">{formatSpeed(receiverProgress.speedBps)}</span>
-                      <span>{formatEta(receiverProgress.etaSeconds)}</span>
+                      <span>{formatEtaString(receiverProgress.etaSeconds)}</span>
                     </div>
                   </div>
                 )}
@@ -889,7 +952,7 @@ export default function App() {
                   onClick={handleCancelDownload}
                   className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 hover:text-rose-300 text-slate-400 text-xs font-semibold border border-slate-700 transition"
                 >
-                  取消下載
+                  {t('receive.downloading.btnCancel')}
                 </button>
               </div>
             )}
@@ -900,9 +963,9 @@ export default function App() {
                 <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4 text-emerald-400">
                   <CheckCircle2 className="w-8 h-8" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-100">所有檔案已下載完成！</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('receive.completed.title')}</h2>
                 <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                  共 {receiverResult.totalFiles} 個檔案（{formatBytes(receiverResult.totalBytes)}）已成功儲存至您所選的資料夾。
+                  {receiverResult.totalFiles} {t('receive.completed.desc')} ({formatBytes(receiverResult.totalBytes)})
                 </p>
 
                 <div className="mt-6 flex items-center gap-3">
@@ -911,13 +974,13 @@ export default function App() {
                     className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-white text-xs font-bold shadow-lg shadow-cyan-500/25 transition"
                   >
                     <FolderOpen className="w-4 h-4" />
-                    在檔案總管中開啟
+                    {t('receive.completed.btnOpenFolder')}
                   </button>
                   <button
                     onClick={handleResetReceiver}
                     className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
                   >
-                    接收更多檔案
+                    {t('receive.completed.btnReceiveMore')}
                   </button>
                 </div>
               </div>
@@ -929,16 +992,16 @@ export default function App() {
                 <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mb-4 text-rose-400">
                   <AlertCircle className="w-7 h-7" />
                 </div>
-                <h2 className="text-xl font-bold text-slate-100">下載失敗</h2>
+                <h2 className="text-xl font-bold text-slate-100">{t('receive.error.title')}</h2>
                 <p className="text-xs text-rose-300 mt-1 max-w-md">
-                  {receiverError || '無法連線至傳送端。'}
+                  {receiverError || 'Unable to connect to sender.'}
                 </p>
 
                 <button
                   onClick={handleResetReceiver}
                   className="mt-6 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
                 >
-                  重試
+                  {t('receive.error.btnRetry')}
                 </button>
               </div>
             )}
