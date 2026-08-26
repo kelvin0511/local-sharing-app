@@ -68,8 +68,8 @@
 
 ```bash
 # 1. 複製專案庫
-git clone https://github.com/your-username/lan-file-sharing.git
-cd lan-file-sharing
+git clone https://github.com/kelvin0511/local-sharing-app.git
+cd local-sharing-app
 
 # 2. 安裝相依套件
 npm install

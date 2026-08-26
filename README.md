@@ -72,8 +72,8 @@ You can find pre-built Windows executables in the [`release/`](release/) folder:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-username/lan-file-sharing.git
-cd lan-file-sharing
+git clone https://github.com/kelvin0511/local-sharing-app.git
+cd local-sharing-app
 
 # 2. Install dependencies
 npm install
