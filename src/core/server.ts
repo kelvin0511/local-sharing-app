@@ -477,11 +477,16 @@ export class TransferServer {
     }
 
     const contentLength = end - start + 1;
+    const safeAsciiName = (fileItem.name || 'download')
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/["\\]/g, '_');
+    const encodedUtf8Name = encodeURIComponent(fileItem.name || 'download');
+
     const headers: http.OutgoingHttpHeaders = {
       'Content-Type': fileItem.type || 'application/octet-stream',
       'Content-Length': contentLength,
       'Accept-Ranges': 'bytes',
-      'Content-Disposition': `attachment; filename="${fileItem.name}"; filename*=UTF-8''${encodeURIComponent(fileItem.name)}`,
+      'Content-Disposition': `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUtf8Name}`,
       'Cache-Control': 'no-cache, no-store, must-revalidate'
     };
 

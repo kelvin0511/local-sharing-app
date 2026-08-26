@@ -72,4 +72,23 @@ describe('ReceiverClient Stream Downloader', () => {
 
     expect(progressEvents.length).toBeGreaterThan(0);
   });
+
+  it('successfully transfers files with non-ASCII, spaces, Chinese, and Zhuyin characters', async () => {
+    const unicodeFile = path.join(tempDir, '260622 ㄇㄆ.mp4');
+    fs.writeFileSync(unicodeFile, 'Special character test content: 測試中文與注音 123');
+
+    const prepared = await createTransferManifest([unicodeFile]);
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.totalFiles).toBe(1);
+
+    const targetSaved = path.join(saveDir, '260622 ㄇㄆ.mp4');
+    expect(fs.existsSync(targetSaved)).toBe(true);
+    expect(fs.readFileSync(targetSaved, 'utf8')).toBe('Special character test content: 測試中文與注音 123');
+  });
 });
