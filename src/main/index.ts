@@ -114,6 +114,38 @@ ipcMain.handle('dialog:openDirectory', async () => {
   return { filePaths, files };
 });
 
+ipcMain.handle('files:resolveDroppedPaths', async (_, rawPaths: string[]) => {
+  const resultFiles: { name: string; path: string; size: number }[] = [];
+  const scannedPaths = new Set<string>();
+
+  async function processPath(p: string) {
+    if (!fs.existsSync(p) || scannedPaths.has(p)) return;
+    scannedPaths.add(p);
+
+    const stat = await fs.promises.stat(p);
+    if (stat.isDirectory()) {
+      const entries = await fs.promises.readdir(p, { withFileTypes: true });
+      for (const entry of entries) {
+        await processPath(path.join(p, entry.name));
+      }
+    } else if (stat.isFile()) {
+      resultFiles.push({
+        name: path.basename(p),
+        path: p,
+        size: stat.size
+      });
+    }
+  }
+
+  for (const p of rawPaths) {
+    if (typeof p === 'string' && p.trim()) {
+      await processPath(p);
+    }
+  }
+
+  return resultFiles;
+});
+
 ipcMain.handle('network:getInterfaces', () => {
   return transferManager.getNetworkInterfaces();
 });

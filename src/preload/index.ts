@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron';
 import {
   DiscoveredSender,
   NetworkInterfaceInfo,
@@ -21,6 +21,8 @@ export interface ElectronAPI {
   // Sender APIs
   openFileDialog: () => Promise<{ filePaths: string[]; files: SelectedFileInfo[] }>;
   openDirectoryDialog: () => Promise<{ filePaths: string[]; files: SelectedFileInfo[] }>;
+  getFilePath: (file: File) => string;
+  resolveDroppedPaths: (paths: string[]) => Promise<SelectedFileInfo[]>;
   getNetworkInterfaces: () => Promise<NetworkInterfaceInfo[]>;
   startTransfer: (filePaths: string[], config?: ServerConfig) => Promise<TransferSessionInfo>;
   cancelTransfer: () => Promise<void>;
@@ -50,6 +52,14 @@ const api: ElectronAPI = {
   // Sender
   openFileDialog: () => ipcRenderer.invoke('dialog:openFiles'),
   openDirectoryDialog: () => ipcRenderer.invoke('dialog:openDirectory'),
+  getFilePath: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return (file as unknown as { path?: string }).path || '';
+    }
+  },
+  resolveDroppedPaths: (paths: string[]) => ipcRenderer.invoke('files:resolveDroppedPaths', paths),
   getNetworkInterfaces: () => ipcRenderer.invoke('network:getInterfaces'),
   startTransfer: (filePaths: string[], config?: ServerConfig) =>
     ipcRenderer.invoke('transfer:start', filePaths, config),

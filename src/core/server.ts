@@ -1,6 +1,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import net from 'net';
 import { pipeline, Transform } from 'stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import QRCode from 'qrcode';
@@ -29,6 +30,7 @@ export class TransferServer {
   private progressTracker: ProgressTracker;
 
   private httpServer: http.Server | null = null;
+  private activeSockets: Set<net.Socket> = new Set();
   private wss: WebSocketServer | null = null;
   private clients: Set<WebSocket> = new Set();
 
@@ -89,6 +91,13 @@ export class TransferServer {
         this.handleHttpRequest(req, res);
       });
 
+      this.httpServer.on('connection', (socket: net.Socket) => {
+        this.activeSockets.add(socket);
+        socket.on('close', () => {
+          this.activeSockets.delete(socket);
+        });
+      });
+
       this.httpServer.on('error', (err: Error) => {
         this.stateMachine.transitionTo('FAILED', {
           reason: err.message,
@@ -145,12 +154,12 @@ export class TransferServer {
           this.stateMachine.transitionTo('WAITING_FOR_RECEIVER');
           resolve(this.sessionInfo);
         } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const error = err instanceof Error ? err : new Error(String(err));
           this.stateMachine.transitionTo('FAILED', {
-            reason: msg,
+            reason: error.message,
             errorCode: 'SERVER_START_FAILED'
           });
-          reject(err);
+          reject(error);
         }
       });
     });
@@ -166,7 +175,9 @@ export class TransferServer {
     }
 
     if (this.broadcaster) {
-      await this.broadcaster.stop();
+      try {
+        await this.broadcaster.stop();
+      } catch {}
       this.broadcaster = null;
     }
 
@@ -182,24 +193,42 @@ export class TransferServer {
       });
     }
 
-    // Terminate WebSocket clients
+    // 1. Destroy all active HTTP and TCP sockets immediately
+    for (const socket of this.activeSockets) {
+      try {
+        socket.destroy();
+      } catch {}
+    }
+    this.activeSockets.clear();
+
+    // 2. Terminate WebSocket clients
     for (const client of this.clients) {
       try {
         client.terminate();
-      } catch {
-        // Ignore termination errors
-      }
+      } catch {}
     }
     this.clients.clear();
 
     if (this.wss) {
-      this.wss.close();
+      try {
+        this.wss.close();
+      } catch {}
       this.wss = null;
     }
 
+    // 3. Close HTTP server with quick fallback
     if (this.httpServer) {
+      if (typeof (this.httpServer as unknown as { closeAllConnections?: () => void }).closeAllConnections === 'function') {
+        try {
+          (this.httpServer as unknown as { closeAllConnections: () => void }).closeAllConnections();
+        } catch {}
+      }
       await new Promise<void>((resolve) => {
-        this.httpServer!.close(() => resolve());
+        const timer = setTimeout(() => resolve(), 300);
+        this.httpServer!.close(() => {
+          clearTimeout(timer);
+          resolve();
+        });
       });
       this.httpServer = null;
     }

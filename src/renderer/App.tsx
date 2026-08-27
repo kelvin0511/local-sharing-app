@@ -260,11 +260,15 @@ export default function App() {
   };
 
   const handleCancelShare = async () => {
-    if (!electronAPI) return;
-    await electronAPI.cancelTransfer();
     setState('IDLE');
     setSession(null);
     setProgress(null);
+    if (!electronAPI) return;
+    try {
+      await electronAPI.cancelTransfer();
+    } catch {
+      // Ignore cancellation errors
+    }
   };
 
   const handleResetSender = () => {
@@ -508,14 +512,36 @@ export default function App() {
                   onDrop={async (e) => {
                     e.preventDefault();
                     setIsDraggingOver(false);
-                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                      const filesArray: SelectedFile[] = Array.from(e.dataTransfer.files).map((f) => ({
-                        name: f.name,
-                        path: (f as unknown as { path?: string }).path || f.name,
-                        size: f.size
-                      }));
-                      setSelectedFiles((prev) => [...prev, ...filesArray]);
-                      setState('FILES_SELECTED');
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && electronAPI) {
+                      const rawPaths: string[] = [];
+                      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+                        const file = e.dataTransfer.files[i];
+                        const p = electronAPI.getFilePath(file);
+                        if (p) rawPaths.push(p);
+                      }
+
+                      if (rawPaths.length > 0) {
+                        try {
+                          const resolvedFiles = await electronAPI.resolveDroppedPaths(rawPaths);
+                          if (resolvedFiles.length > 0) {
+                            setSelectedFiles((prev) => {
+                              const existing = new Set(prev.map((f) => f.path));
+                              const newFiles = resolvedFiles.filter((f) => !existing.has(f.path));
+                              return [...prev, ...newFiles];
+                            });
+                            setState('FILES_SELECTED');
+                          }
+                        } catch {
+                          // Fallback to basic file info
+                          const fallbackFiles: SelectedFile[] = Array.from(e.dataTransfer.files).map((f) => ({
+                            name: f.name,
+                            path: electronAPI.getFilePath(f) || f.name,
+                            size: f.size
+                          }));
+                          setSelectedFiles((prev) => [...prev, ...fallbackFiles]);
+                          setState('FILES_SELECTED');
+                        }
+                      }
                     }
                   }}
                   className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all duration-200 cursor-pointer ${
