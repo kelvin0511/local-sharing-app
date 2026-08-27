@@ -199,4 +199,32 @@ describe('ReceiverClient Stream Downloader', () => {
     expect(fs.existsSync(targetSaved)).toBe(true);
     expect(fs.statSync(targetSaved).size).toBe(4 * 1024 * 1024);
   });
+
+  it('successfully transfers 0-byte (0 KB) empty files without hanging or stream errors', async () => {
+    const emptyFile1 = path.join(tempDir, 'empty1.txt');
+    const emptyFile2 = path.join(tempDir, 'empty2.dat');
+    const normalFile = path.join(tempDir, 'normal.txt');
+    fs.writeFileSync(emptyFile1, '');
+    fs.writeFileSync(emptyFile2, Buffer.alloc(0));
+    fs.writeFileSync(normalFile, 'Some normal content');
+
+    const prepared = await createTransferManifest([emptyFile1, emptyFile2, normalFile]);
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.totalFiles).toBe(3);
+
+    expect(fs.existsSync(path.join(saveDir, 'empty1.txt'))).toBe(true);
+    expect(fs.statSync(path.join(saveDir, 'empty1.txt')).size).toBe(0);
+
+    expect(fs.existsSync(path.join(saveDir, 'empty2.dat'))).toBe(true);
+    expect(fs.statSync(path.join(saveDir, 'empty2.dat')).size).toBe(0);
+
+    expect(fs.existsSync(path.join(saveDir, 'normal.txt'))).toBe(true);
+    expect(fs.readFileSync(path.join(saveDir, 'normal.txt'), 'utf8')).toBe('Some normal content');
+  });
 });

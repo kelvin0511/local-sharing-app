@@ -492,6 +492,31 @@ export class TransferServer {
     const fileIndex = this.prepared.manifest.files.findIndex((f: PublicFileItem) => f.id === fileItem.id);
     this.progressTracker.startFile(fileIndex >= 0 ? fileIndex + 1 : 1, fileItem.id, fileItem.name, fileSize);
 
+    const safeAsciiName = (fileItem.name || 'download')
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/["\\]/g, '_');
+    const encodedUtf8Name = encodeURIComponent(fileItem.name || 'download');
+
+    // Handle 0-byte files cleanly without creating invalid stream with start 0, end -1
+    if (fileSize === 0) {
+      res.writeHead(200, {
+        'Content-Type': fileItem.type || 'application/octet-stream',
+        'Content-Length': 0,
+        'Accept-Ranges': 'bytes',
+        'Content-Disposition': `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedUtf8Name}`,
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end();
+      this.progressTracker.finishCurrentFile();
+      const progress = this.progressTracker.getProgress();
+      this.broadcast<ProgressUpdate>({
+        type: 'TRANSFER_PROGRESS',
+        payload: progress,
+        timestamp: Date.now()
+      });
+      return;
+    }
+
     let start = 0;
     let end = fileSize - 1;
     let statusCode = 200;
@@ -513,10 +538,6 @@ export class TransferServer {
     }
 
     const contentLength = end - start + 1;
-    const safeAsciiName = (fileItem.name || 'download')
-      .replace(/[^\x20-\x7E]/g, '_')
-      .replace(/["\\]/g, '_');
-    const encodedUtf8Name = encodeURIComponent(fileItem.name || 'download');
 
     const headers: http.OutgoingHttpHeaders = {
       'Content-Type': fileItem.type || 'application/octet-stream',
