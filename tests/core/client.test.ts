@@ -178,4 +178,25 @@ describe('ReceiverClient Stream Downloader', () => {
     expect(fs.existsSync(path.join(saveDir, 'fileB.dat'))).toBe(false);
     expect(fs.existsSync(path.join(saveDir, 'fileC.dat'))).toBe(true);
   });
+
+  it('successfully downloads m4v video files without socket inactivity timeout', async () => {
+    const videoFile = path.join(tempDir, '正常.34756.26444.m4v');
+    // Generate 4MB chunked stream data
+    const dummyVideo = Buffer.alloc(4 * 1024 * 1024, 0x5a);
+    fs.writeFileSync(videoFile, dummyVideo);
+
+    const prepared = await createTransferManifest([videoFile]);
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.totalFiles).toBe(1);
+
+    const targetSaved = path.join(saveDir, '正常.34756.26444.m4v');
+    expect(fs.existsSync(targetSaved)).toBe(true);
+    expect(fs.statSync(targetSaved).size).toBe(4 * 1024 * 1024);
+  });
 });

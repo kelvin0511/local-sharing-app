@@ -300,20 +300,14 @@ export class ReceiverClient extends EventEmitter {
       });
       this.currentWriteStream = writeStream;
 
-      let activeSocket: import('net').Socket | null = null;
-
       const progressTransform = new Transform({
         transform(chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: Buffer) => void) {
           onChunk(chunk.length);
-          // Reset socket inactivity timer on receiving data
-          if (activeSocket) {
-            activeSocket.setTimeout(45000);
-          }
           callback(null, chunk);
         }
       });
 
-      const req = http.get(url, { agent: this.httpAgent }, (res) => {
+      const req = http.get(url, { agent: false }, (res) => {
         if (res.statusCode !== 200 && res.statusCode !== 206) {
           writeStream.destroy();
           progressTransform.destroy();
@@ -333,13 +327,8 @@ export class ReceiverClient extends EventEmitter {
       });
 
       req.on('socket', (socket) => {
-        activeSocket = socket;
         socket.setNoDelay(true);
-        socket.setKeepAlive(true, 10000);
-        socket.setTimeout(45000);
-        socket.on('timeout', () => {
-          req.destroy(new Error(`Socket inactivity timeout while downloading ${file.name}`));
-        });
+        socket.setKeepAlive(true, 5000);
       });
 
       this.currentRequest = req;

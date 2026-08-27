@@ -532,7 +532,11 @@ export class TransferServer {
 
     res.writeHead(statusCode, headers);
 
-    const stream = fs.createReadStream(filePath, { start, end });
+    const stream = fs.createReadStream(filePath, {
+      start,
+      end,
+      highWaterMark: 1024 * 1024
+    });
     let lastProgressBroadcast = 0;
 
     const trackerTransform = new Transform({
