@@ -116,4 +116,66 @@ describe('ReceiverClient Stream Downloader', () => {
       expect(fs.statSync(target).size).toBe(256 * 1024);
     }
   });
+
+  it('preserves nested folder hierarchies and subfolder file structures', async () => {
+    const subDir1 = path.join(tempDir, 'FolderA', 'Sub1');
+    fs.mkdirSync(subDir1, { recursive: true });
+    const subFile1 = path.join(subDir1, 'nested_doc.pdf');
+    fs.writeFileSync(subFile1, 'Nested PDF document contents');
+
+    const subDir2 = path.join(tempDir, 'FolderA', 'Sub2');
+    fs.mkdirSync(subDir2, { recursive: true });
+    const subFile2 = path.join(subDir2, 'photo.png');
+    fs.writeFileSync(subFile2, 'PNG binary data');
+
+    const prepared = await createTransferManifest([
+      { path: subFile1, relativePath: 'FolderA/Sub1/nested_doc.pdf' },
+      { path: subFile2, relativePath: 'FolderA/Sub2/photo.png' }
+    ]);
+
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.totalFiles).toBe(2);
+
+    const target1 = path.join(saveDir, 'FolderA', 'Sub1', 'nested_doc.pdf');
+    const target2 = path.join(saveDir, 'FolderA', 'Sub2', 'photo.png');
+
+    expect(fs.existsSync(target1)).toBe(true);
+    expect(fs.readFileSync(target1, 'utf8')).toBe('Nested PDF document contents');
+
+    expect(fs.existsSync(target2)).toBe(true);
+    expect(fs.readFileSync(target2, 'utf8')).toBe('PNG binary data');
+  });
+
+  it('allows skipping a single file in batch download and continues with next files', async () => {
+    const fileA = path.join(tempDir, 'fileA.dat');
+    const fileB = path.join(tempDir, 'fileB.dat');
+    const fileC = path.join(tempDir, 'fileC.dat');
+    fs.writeFileSync(fileA, 'Content A');
+    fs.writeFileSync(fileB, 'Content B');
+    fs.writeFileSync(fileC, 'Content C');
+
+    const prepared = await createTransferManifest([fileA, fileB, fileC]);
+    const fileBId = prepared.manifest.files[1].id;
+
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    client.skipFile(fileBId); // Skip second file
+
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.skippedFiles).toBe(1);
+
+    expect(fs.existsSync(path.join(saveDir, 'fileA.dat'))).toBe(true);
+    expect(fs.existsSync(path.join(saveDir, 'fileB.dat'))).toBe(false);
+    expect(fs.existsSync(path.join(saveDir, 'fileC.dat'))).toBe(true);
+  });
 });

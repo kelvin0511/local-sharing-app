@@ -84,7 +84,8 @@ ipcMain.handle('dialog:openDirectory', async () => {
   }
 
   const dirPath = result.filePaths[0];
-  const filePaths: string[] = [];
+  const folderBaseName = path.basename(dirPath);
+  const scannedFiles: { name: string; path: string; relativePath: string; size: number }[] = [];
 
   async function scan(currentDir: string) {
     const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
@@ -93,29 +94,25 @@ ipcMain.handle('dialog:openDirectory', async () => {
       if (entry.isDirectory()) {
         await scan(full);
       } else if (entry.isFile()) {
-        filePaths.push(full);
+        const stat = await fs.promises.stat(full);
+        const relFromDir = path.relative(dirPath, full).replace(/\\/g, '/');
+        const relativePath = `${folderBaseName}/${relFromDir}`;
+        scannedFiles.push({
+          name: entry.name,
+          path: full,
+          relativePath,
+          size: stat.size
+        });
       }
     }
   }
 
   await scan(dirPath);
-
-  const files = await Promise.all(
-    filePaths.map(async (fp) => {
-      const stat = await fs.promises.stat(fp);
-      return {
-        name: path.basename(fp),
-        path: fp,
-        size: stat.size
-      };
-    })
-  );
-
-  return { filePaths, files };
+  return { filePaths: scannedFiles.map(f => f.path), files: scannedFiles };
 });
 
 ipcMain.handle('files:resolveDroppedPaths', async (_, rawPaths: string[]) => {
-  const resultFiles: { name: string; path: string; size: number }[] = [];
+  const resultFiles: { name: string; path: string; relativePath?: string; size: number }[] = [];
   const scannedPaths = new Set<string>();
 
   async function processPath(p: string) {
@@ -124,14 +121,32 @@ ipcMain.handle('files:resolveDroppedPaths', async (_, rawPaths: string[]) => {
 
     const stat = await fs.promises.stat(p);
     if (stat.isDirectory()) {
-      const entries = await fs.promises.readdir(p, { withFileTypes: true });
-      for (const entry of entries) {
-        await processPath(path.join(p, entry.name));
+      const folderBaseName = path.basename(p);
+      async function scanSub(currentDir: string) {
+        const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(currentDir, entry.name);
+          if (entry.isDirectory()) {
+            await scanSub(full);
+          } else if (entry.isFile()) {
+            const fstat = await fs.promises.stat(full);
+            const relFromDir = path.relative(p, full).replace(/\\/g, '/');
+            const relativePath = `${folderBaseName}/${relFromDir}`;
+            resultFiles.push({
+              name: entry.name,
+              path: full,
+              relativePath,
+              size: fstat.size
+            });
+          }
+        }
       }
+      await scanSub(p);
     } else if (stat.isFile()) {
       resultFiles.push({
         name: path.basename(p),
         path: p,
+        relativePath: path.basename(p),
         size: stat.size
       });
     }
@@ -150,8 +165,8 @@ ipcMain.handle('network:getInterfaces', () => {
   return transferManager.getNetworkInterfaces();
 });
 
-ipcMain.handle('transfer:start', async (_, filePaths: string[], config?: ServerConfig) => {
-  return transferManager.startTransfer(filePaths, config);
+ipcMain.handle('transfer:start', async (_, fileEntries: (string | { path: string; relativePath?: string })[], config?: ServerConfig) => {
+  return transferManager.startTransfer(fileEntries, config);
 });
 
 ipcMain.handle('transfer:cancel', async () => {
@@ -170,6 +185,10 @@ ipcMain.handle('receiver:stopDiscovery', async () => {
 
 ipcMain.handle('receiver:resolveCode', async (_, code: string) => {
   return transferManager.resolveCode(code);
+});
+
+ipcMain.handle('receiver:skipFile', async (_, fileId: string) => {
+  return transferManager.skipReceiverFile(fileId);
 });
 
 ipcMain.handle('receiver:selectSaveDirectory', async () => {

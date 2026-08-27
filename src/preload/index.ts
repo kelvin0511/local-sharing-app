@@ -14,6 +14,7 @@ import { StateChangeEvent } from '../core/state';
 export interface SelectedFileInfo {
   name: string;
   path: string;
+  relativePath?: string;
   size: number;
 }
 
@@ -24,7 +25,7 @@ export interface ElectronAPI {
   getFilePath: (file: File) => string;
   resolveDroppedPaths: (paths: string[]) => Promise<SelectedFileInfo[]>;
   getNetworkInterfaces: () => Promise<NetworkInterfaceInfo[]>;
-  startTransfer: (filePaths: string[], config?: ServerConfig) => Promise<TransferSessionInfo>;
+  startTransfer: (fileEntries: (string | SelectedFileInfo)[], config?: ServerConfig) => Promise<TransferSessionInfo>;
   cancelTransfer: () => Promise<void>;
   onTransferStateChange: (callback: (event: StateChangeEvent) => void) => () => void;
   onTransferProgress: (callback: (progress: ProgressUpdate) => void) => () => void;
@@ -40,6 +41,7 @@ export interface ElectronAPI {
   fetchManifest: (ip: string, port: number, token: string) => Promise<TransferManifest>;
   startDownload: (sender: DiscoveredSender, saveDirectory: string) => Promise<ReceiverDownloadResult>;
   cancelDownload: () => Promise<void>;
+  skipReceiverFile: (fileId: string) => Promise<void>;
   openFolder: (folderPath: string) => Promise<boolean>;
   onDiscoveredSenders: (callback: (senders: DiscoveredSender[]) => void) => () => void;
   onReceiverProgress: (callback: (progress: ReceiverProgressUpdate) => void) => () => void;
@@ -61,8 +63,8 @@ const api: ElectronAPI = {
   },
   resolveDroppedPaths: (paths: string[]) => ipcRenderer.invoke('files:resolveDroppedPaths', paths),
   getNetworkInterfaces: () => ipcRenderer.invoke('network:getInterfaces'),
-  startTransfer: (filePaths: string[], config?: ServerConfig) =>
-    ipcRenderer.invoke('transfer:start', filePaths, config),
+  startTransfer: (fileEntries: (string | SelectedFileInfo)[], config?: ServerConfig) =>
+    ipcRenderer.invoke('transfer:start', fileEntries, config),
   cancelTransfer: () => ipcRenderer.invoke('transfer:cancel'),
 
   onTransferStateChange: (callback: (event: StateChangeEvent) => void) => {
@@ -105,6 +107,7 @@ const api: ElectronAPI = {
   startDownload: (sender: DiscoveredSender, saveDirectory: string) =>
     ipcRenderer.invoke('receiver:startDownload', sender, saveDirectory),
   cancelDownload: () => ipcRenderer.invoke('receiver:cancelDownload'),
+  skipReceiverFile: (fileId: string) => ipcRenderer.invoke('receiver:skipFile', fileId),
   openFolder: (folderPath: string) => ipcRenderer.invoke('receiver:openFolder', folderPath),
 
   onDiscoveredSenders: (callback: (senders: DiscoveredSender[]) => void) => {

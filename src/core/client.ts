@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import { pipeline, Transform } from 'stream';
 import WebSocket from 'ws';
 import {
+  FileProgressDetail,
   PublicFileItem,
   ReceiverDownloadResult,
   ReceiverProgressUpdate,
@@ -12,14 +13,16 @@ import {
   WSMessage
 } from './types';
 
-function getUniqueFilePath(dir: string, baseName: string): string {
-  let target = path.join(dir, baseName);
-  if (!fs.existsSync(target)) {
-    return target;
+function getUniqueFilePath(baseDir: string, relativePath: string): string {
+  const cleanRel = relativePath.replace(/^[/\\]+/, '');
+  const fullTarget = path.join(baseDir, cleanRel);
+  if (!fs.existsSync(fullTarget)) {
+    return fullTarget;
   }
 
-  const ext = path.extname(baseName);
-  const nameWithoutExt = path.basename(baseName, ext);
+  const dir = path.dirname(fullTarget);
+  const ext = path.extname(cleanRel);
+  const nameWithoutExt = path.basename(cleanRel, ext);
   let counter = 1;
 
   while (fs.existsSync(path.join(dir, `${nameWithoutExt} (${counter})${ext}`))) {
@@ -34,6 +37,9 @@ export class ReceiverClient extends EventEmitter {
   private currentRequest: http.ClientRequest | null = null;
   private currentWriteStream: fs.WriteStream | null = null;
   private currentFilePath: string | null = null;
+  private currentFileId: string | null = null;
+  private skippedFileIds: Set<string> = new Set();
+  private fileDetails: FileProgressDetail[] = [];
   private ws: WebSocket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private httpAgent: http.Agent = new http.Agent({
@@ -72,6 +78,38 @@ export class ReceiverClient extends EventEmitter {
     });
   }
 
+  public skipFile(fileId: string): void {
+    this.skippedFileIds.add(fileId);
+    const detail = this.fileDetails.find(f => f.id === fileId);
+    if (detail) {
+      detail.status = 'skipped';
+    }
+
+    // If currently downloading this file, abort it so the loop advances to next file
+    if (this.currentFileId === fileId) {
+      if (this.currentRequest) {
+        this.currentRequest.destroy();
+        this.currentRequest = null;
+      }
+      if (this.currentWriteStream) {
+        this.currentWriteStream.destroy();
+        this.currentWriteStream = null;
+        if (this.currentFilePath && fs.existsSync(this.currentFilePath)) {
+          try { fs.unlinkSync(this.currentFilePath); } catch {}
+        }
+      }
+    }
+
+    // Notify sender via WebSocket
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'SKIP_FILE',
+        payload: { fileId },
+        timestamp: Date.now()
+      }));
+    }
+  }
+
   public async downloadAll(
     ip: string,
     port: number,
@@ -85,6 +123,17 @@ export class ReceiverClient extends EventEmitter {
 
     // 2. Ensure target directory exists
     await fs.promises.mkdir(saveDirectory, { recursive: true });
+
+    // Initialize per-file details
+    this.fileDetails = manifest.files.map((f) => ({
+      id: f.id,
+      name: f.name,
+      relativePath: f.relativePath,
+      size: f.size,
+      status: this.skippedFileIds.has(f.id) ? 'skipped' : 'pending',
+      bytesTransferred: 0,
+      percentage: 0
+    }));
 
     // 3. Connect WebSocket for live sync & signaling
     this.connectWebSocket(ip, port, token);
@@ -104,54 +153,93 @@ export class ReceiverClient extends EventEmitter {
         }
 
         const file = manifest.files[i];
-        const targetPath = getUniqueFilePath(saveDirectory, file.name);
+        this.currentFileId = file.id;
+
+        const detail = this.fileDetails.find(f => f.id === file.id);
+        if (this.skippedFileIds.has(file.id)) {
+          if (detail) detail.status = 'skipped';
+          continue;
+        }
+
+        if (detail) detail.status = 'transferring';
+
+        // Preserve relative subfolder structure
+        const relPath = file.relativePath || file.name;
+        const targetPath = getUniqueFilePath(saveDirectory, relPath);
         this.currentFilePath = targetPath;
+        await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
 
         let fileBytesDownloaded = 0;
 
-        await this.downloadSingleFile(
-          ip,
-          port,
-          token,
-          file,
-          targetPath,
-          (chunkLen) => {
-            fileBytesDownloaded += chunkLen;
-            totalBytesDownloaded += chunkLen;
+        try {
+          await this.downloadSingleFile(
+            ip,
+            port,
+            token,
+            file,
+            targetPath,
+            (chunkLen) => {
+              fileBytesDownloaded += chunkLen;
+              totalBytesDownloaded += chunkLen;
 
-            const now = Date.now();
-            const timeDelta = (now - lastTimeSample) / 1000;
-            if (timeDelta >= 0.5) {
-              const bytesDelta = totalBytesDownloaded - lastBytesSample;
-              currentSpeed = bytesDelta / timeDelta;
-              lastBytesSample = totalBytesDownloaded;
-              lastTimeSample = now;
+              if (detail) {
+                detail.bytesTransferred = Math.min(detail.size, fileBytesDownloaded);
+                detail.percentage = detail.size > 0 ? Math.min(100, Math.round((detail.bytesTransferred / detail.size) * 1000) / 10) : 100;
+              }
+
+              const now = Date.now();
+              const timeDelta = (now - lastTimeSample) / 1000;
+              if (timeDelta >= 0.5) {
+                const bytesDelta = totalBytesDownloaded - lastBytesSample;
+                currentSpeed = bytesDelta / timeDelta;
+                lastBytesSample = totalBytesDownloaded;
+                lastTimeSample = now;
+              }
+
+              // Throttle progress updates to avoid saturating Electron IPC and event loop
+              if (now - lastProgressEmitTime >= 100) {
+                lastProgressEmitTime = now;
+                const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
+                const etaSeconds = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
+                const percentage = totalBytes > 0 ? Math.min(100, (totalBytesDownloaded / totalBytes) * 100) : 100;
+
+                const progress: ReceiverProgressUpdate = {
+                  currentFileIndex: i + 1,
+                  totalFiles,
+                  currentFileName: file.name,
+                  currentFileBytesDownloaded: fileBytesDownloaded,
+                  currentFileTotalBytes: file.size,
+                  totalBytesDownloaded,
+                  totalBytes,
+                  speedBps: currentSpeed,
+                  etaSeconds,
+                  percentage,
+                  fileDetails: this.fileDetails.map(f => ({ ...f }))
+                };
+
+                this.emit('progress', progress);
+              }
             }
+          );
 
-            // Throttle progress updates to avoid saturating Electron IPC and event loop
-            if (now - lastProgressEmitTime >= 100) {
-              lastProgressEmitTime = now;
-              const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
-              const etaSeconds = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
-              const percentage = totalBytes > 0 ? Math.min(100, (totalBytesDownloaded / totalBytes) * 100) : 100;
-
-              const progress: ReceiverProgressUpdate = {
-                currentFileIndex: i + 1,
-                totalFiles,
-                currentFileName: file.name,
-                currentFileBytesDownloaded: fileBytesDownloaded,
-                currentFileTotalBytes: file.size,
-                totalBytesDownloaded,
-                totalBytes,
-                speedBps: currentSpeed,
-                etaSeconds,
-                percentage
-              };
-
-              this.emit('progress', progress);
-            }
+          if (detail && detail.status !== 'skipped') {
+            detail.status = 'completed';
+            detail.bytesTransferred = detail.size;
+            detail.percentage = 100;
           }
-        );
+        } catch (fileErr) {
+          // If this file was intentionally skipped, move to next file
+          if (this.skippedFileIds.has(file.id)) {
+            if (detail) detail.status = 'skipped';
+            continue;
+          }
+          if (this.isCancelled) {
+            throw fileErr;
+          }
+          // Mark as failed and throw
+          if (detail) detail.status = 'failed';
+          throw fileErr;
+        }
 
         // Always emit progress event on file completion
         const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
@@ -167,7 +255,8 @@ export class ReceiverClient extends EventEmitter {
           totalBytes,
           speedBps: currentSpeed,
           etaSeconds,
-          percentage
+          percentage,
+          fileDetails: this.fileDetails.map(f => ({ ...f }))
         });
       }
 
@@ -179,7 +268,8 @@ export class ReceiverClient extends EventEmitter {
         success: true,
         saveDirectory,
         totalFiles,
-        totalBytes
+        totalBytes,
+        skippedFiles: this.skippedFileIds.size
       };
     } catch (err) {
       this.cleanup();
@@ -210,9 +300,15 @@ export class ReceiverClient extends EventEmitter {
       });
       this.currentWriteStream = writeStream;
 
+      let activeSocket: import('net').Socket | null = null;
+
       const progressTransform = new Transform({
         transform(chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: Buffer) => void) {
           onChunk(chunk.length);
+          // Reset socket inactivity timer on receiving data
+          if (activeSocket) {
+            activeSocket.setTimeout(45000);
+          }
           callback(null, chunk);
         }
       });
@@ -237,12 +333,13 @@ export class ReceiverClient extends EventEmitter {
       });
 
       req.on('socket', (socket) => {
+        activeSocket = socket;
         socket.setNoDelay(true);
-        socket.setKeepAlive(true);
-      });
-
-      req.setTimeout(60000, () => {
-        req.destroy(new Error(`Download timed out for file ${file.name}`));
+        socket.setKeepAlive(true, 10000);
+        socket.setTimeout(45000);
+        socket.on('timeout', () => {
+          req.destroy(new Error(`Socket inactivity timeout while downloading ${file.name}`));
+        });
       });
 
       this.currentRequest = req;

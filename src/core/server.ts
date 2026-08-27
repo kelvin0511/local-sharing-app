@@ -48,7 +48,8 @@ export class TransferServer {
     this.progressTracker = new ProgressTracker(
       prepared.manifest.transferId,
       prepared.manifest.totalBytes,
-      prepared.manifest.fileCount
+      prepared.manifest.fileCount,
+      prepared.manifest.files
     );
   }
 
@@ -306,6 +307,16 @@ export class TransferServer {
           payload: msg.payload,
           timestamp: Date.now()
         });
+      } else if (msg.type === 'SKIP_FILE') {
+        const fileId = (msg.payload as { fileId?: string })?.fileId;
+        if (fileId) {
+          const updatedProgress = this.progressTracker.skipFile(fileId);
+          this.broadcast<ProgressUpdate>({
+            type: 'TRANSFER_PROGRESS',
+            payload: updatedProgress,
+            timestamp: Date.now()
+          });
+        }
       }
     } catch {
       // Ignore malformed message
@@ -436,11 +447,6 @@ export class TransferServer {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Transfer marked as completed.' }));
-
-        // Automatically schedule graceful server shutdown
-        setTimeout(() => {
-          this.close('Transfer completed successfully');
-        }, 1500);
         return;
       }
 
@@ -535,7 +541,7 @@ export class TransferServer {
         const progress = this.progressTracker.recordBytes(byteLen);
         const now = Date.now();
 
-        if (now - lastProgressBroadcast >= 150) {
+        if (now - lastProgressBroadcast >= 100) {
           lastProgressBroadcast = now;
           this.broadcast<ProgressUpdate>({
             type: 'TRANSFER_PROGRESS',
@@ -548,24 +554,30 @@ export class TransferServer {
       }
     });
 
-    const cleanup = () => {
+    req.on('aborted', () => {
       if (!stream.destroyed) stream.destroy();
       if (!trackerTransform.destroyed) trackerTransform.destroy();
-    };
-
-    req.on('close', cleanup);
-    res.on('close', cleanup);
+    });
 
     pipeline(stream, trackerTransform, res, (err) => {
-      cleanup();
-      if (err && !res.writableEnded && !res.destroyed) {
-        this.stateMachine.transitionTo('FAILED', {
-          reason: err.message,
-          errorCode: 'FILE_READ_FAILED'
-        });
-        this.broadcast({
-          type: 'TRANSFER_FAILED',
-          payload: { error: err.message, code: 'FILE_READ_FAILED' },
+      if (err) {
+        if (!res.writableEnded && !res.destroyed && this.stateMachine.state === 'TRANSFERRING') {
+          this.stateMachine.transitionTo('FAILED', {
+            reason: err.message,
+            errorCode: 'FILE_READ_FAILED'
+          });
+          this.broadcast({
+            type: 'TRANSFER_FAILED',
+            payload: { error: err.message, code: 'FILE_READ_FAILED' },
+            timestamp: Date.now()
+          });
+        }
+      } else {
+        this.progressTracker.finishCurrentFile();
+        const progress = this.progressTracker.getProgress();
+        this.broadcast<ProgressUpdate>({
+          type: 'TRANSFER_PROGRESS',
+          payload: progress,
           timestamp: Date.now()
         });
       }

@@ -16,15 +16,26 @@ export interface PreparedTransfer {
   internalFiles: Map<string, FileItem>; // Maps fileId -> FileItem (with local absolute path)
 }
 
+export type FileEntryInput = string | { path: string; relativePath?: string };
+
 /**
- * Validates an array of filesystem paths, computes sizes, and builds a secure transfer session.
+ * Normalizes and sanitizes a relative path (e.g., "Folder/sub/file.txt")
+ */
+function sanitizeRelativePath(relPath: string): string {
+  const parts = relPath.replace(/\\/g, '/').split('/').filter(p => p && p !== '.' && p !== '..');
+  const safeParts = parts.map(p => sanitizeFilename(p));
+  return safeParts.join('/');
+}
+
+/**
+ * Validates an array of filesystem paths or file entries, computes sizes, and builds a secure transfer session.
  */
 export async function createTransferManifest(
-  filePaths: string[],
+  fileEntries: FileEntryInput[],
   idleTimeoutMs: number = 10 * 60 * 1000, // 10 minutes default
   customPairingCode?: string
 ): Promise<PreparedTransfer> {
-  if (!filePaths || filePaths.length === 0) {
+  if (!fileEntries || fileEntries.length === 0) {
     throw new Error('No files provided for transfer.');
   }
 
@@ -32,7 +43,10 @@ export async function createTransferManifest(
   const publicFiles: PublicFileItem[] = [];
   let totalBytes = 0;
 
-  for (const rawPath of filePaths) {
+  for (const entry of fileEntries) {
+    const rawPath = typeof entry === 'string' ? entry : entry.path;
+    const customRelPath = typeof entry === 'string' ? undefined : entry.relativePath;
+
     const resolvedPath = path.resolve(rawPath);
     let stat: fs.Stats;
     try {
@@ -48,12 +62,14 @@ export async function createTransferManifest(
 
     const originalName = path.basename(resolvedPath);
     const safeName = sanitizeFilename(originalName);
+    const safeRelativePath = customRelPath ? sanitizeRelativePath(customRelPath) : undefined;
     const mimeType = mime.lookup(safeName) || 'application/octet-stream';
     const id = generateFileId();
 
     const fileItem: FileItem = {
       id,
       name: safeName,
+      relativePath: safeRelativePath,
       size: stat.size,
       type: mimeType,
       path: resolvedPath
@@ -62,6 +78,7 @@ export async function createTransferManifest(
     const publicItem: PublicFileItem = {
       id,
       name: safeName,
+      relativePath: safeRelativePath,
       size: stat.size,
       type: mimeType
     };

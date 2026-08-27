@@ -33,9 +33,22 @@ export type ErrorCode =
   | 'FIREWALL_BLOCKED'
   | 'UNKNOWN_ERROR';
 
+export type FileStatus = 'pending' | 'transferring' | 'completed' | 'skipped' | 'failed';
+
+export interface FileProgressDetail {
+  id: string;
+  name: string;
+  relativePath?: string;
+  size: number;
+  status: FileStatus;
+  bytesTransferred: number;
+  percentage: number;
+}
+
 export interface FileItem {
   id: string;
   name: string;
+  relativePath?: string; // Subfolder path (e.g., "MyFolder/sub1/image.png")
   size: number;
   type: string;
   path: string; // Sender's local filesystem path (never sent to receiver over network)
@@ -44,6 +57,7 @@ export interface FileItem {
 export interface PublicFileItem {
   id: string;
   name: string;
+  relativePath?: string; // Subfolder path
   size: number;
   type: string;
 }
@@ -82,6 +96,7 @@ export interface ProgressUpdate {
   speedBps: number; // Bytes per second
   etaSeconds: number;
   percentage: number; // 0 to 100
+  fileDetails?: FileProgressDetail[];
 }
 
 export interface ServerConfig {
@@ -130,6 +145,7 @@ export interface ReceiverProgressUpdate {
   speedBps: number;
   etaSeconds: number;
   percentage: number;
+  fileDetails?: FileProgressDetail[];
 }
 
 export interface ReceiverDownloadResult {
@@ -137,6 +153,7 @@ export interface ReceiverDownloadResult {
   saveDirectory: string;
   totalFiles: number;
   totalBytes: number;
+  skippedFiles?: number;
   error?: string;
 }
 
@@ -148,6 +165,8 @@ export type WSMessageType =
   | 'RECEIVER_CONFIRMED'
   | 'TRANSFER_PROGRESS'
   | 'FILE_COMPLETED'
+  | 'FILE_SKIPPED'
+  | 'SKIP_FILE'
   | 'TRANSFER_COMPLETED'
   | 'TRANSFER_FAILED'
   | 'TRANSFER_CANCELLED'

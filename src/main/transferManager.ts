@@ -34,14 +34,14 @@ export class TransferManager {
   // ===================== SENDER METHODS =====================
 
   public async startTransfer(
-    filePaths: string[],
+    fileEntries: (string | { path: string; relativePath?: string })[],
     config: ServerConfig = {}
   ): Promise<TransferSessionInfo> {
     if (this.currentServer) {
       await this.cancelTransfer('Starting new transfer');
     }
 
-    const prepared = await createTransferManifest(filePaths);
+    const prepared = await createTransferManifest(fileEntries);
     this.currentServer = new TransferServer(prepared, config);
 
     // Forward state changes to renderer window
@@ -152,6 +152,12 @@ export class TransferManager {
       this.receiverClient.cancel();
       this.receiverClient = null;
       this.sendToRenderer('receiver:cancelled');
+    }
+  }
+
+  public skipReceiverFile(fileId: string): void {
+    if (this.receiverClient) {
+      this.receiverClient.skipFile(fileId);
     }
   }
 
