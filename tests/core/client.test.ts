@@ -91,4 +91,29 @@ describe('ReceiverClient Stream Downloader', () => {
     expect(fs.existsSync(targetSaved)).toBe(true);
     expect(fs.readFileSync(targetSaved, 'utf8')).toBe('Special character test content: 測試中文與注音 123');
   });
+
+  it('handles multi-file batch transfers without hanging or event loop starvation', async () => {
+    const files: string[] = [];
+    for (let i = 1; i <= 6; i++) {
+      const p = path.join(tempDir, `batch_file_${i}.dat`);
+      fs.writeFileSync(p, Buffer.alloc(256 * 1024, i));
+      files.push(p);
+    }
+
+    const prepared = await createTransferManifest(files);
+    server = new TransferServer(prepared, { bindAddress: '127.0.0.1', selectedIp: '127.0.0.1' });
+    const session = await server.start();
+
+    const client = new ReceiverClient();
+    const result = await client.downloadAll('127.0.0.1', session.port, session.token, saveDir);
+
+    expect(result.success).toBe(true);
+    expect(result.totalFiles).toBe(6);
+
+    for (let i = 1; i <= 6; i++) {
+      const target = path.join(saveDir, `batch_file_${i}.dat`);
+      expect(fs.existsSync(target)).toBe(true);
+      expect(fs.statSync(target).size).toBe(256 * 1024);
+    }
+  });
 });

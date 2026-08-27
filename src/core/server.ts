@@ -1,6 +1,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { pipeline, Transform } from 'stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import QRCode from 'qrcode';
 import mime from 'mime-types';
@@ -454,7 +455,7 @@ export class TransferServer {
     }
 
     const fileIndex = this.prepared.manifest.files.findIndex((f: PublicFileItem) => f.id === fileItem.id);
-    this.progressTracker.startFile(fileIndex >= 0 ? fileIndex : 0, fileItem.id, fileItem.name, fileSize);
+    this.progressTracker.startFile(fileIndex >= 0 ? fileIndex + 1 : 1, fileItem.id, fileItem.name, fileSize);
 
     let start = 0;
     let end = fileSize - 1;
@@ -497,36 +498,49 @@ export class TransferServer {
     res.writeHead(statusCode, headers);
 
     const stream = fs.createReadStream(filePath, { start, end });
+    let lastProgressBroadcast = 0;
 
-    stream.on('data', (chunk: Buffer | string) => {
-      const byteLen = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
-      const progress = this.progressTracker.recordBytes(byteLen);
+    const trackerTransform = new Transform({
+      transform: (chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: Buffer) => void) => {
+        const byteLen = chunk.length;
+        const progress = this.progressTracker.recordBytes(byteLen);
+        const now = Date.now();
 
-      // Broadcast real-time progress update
-      this.broadcast<ProgressUpdate>({
-        type: 'TRANSFER_PROGRESS',
-        payload: progress,
-        timestamp: Date.now()
-      });
-    });
+        if (now - lastProgressBroadcast >= 150) {
+          lastProgressBroadcast = now;
+          this.broadcast<ProgressUpdate>({
+            type: 'TRANSFER_PROGRESS',
+            payload: progress,
+            timestamp: now
+          });
+        }
 
-    stream.on('error', (err: Error) => {
-      this.stateMachine.transitionTo('FAILED', {
-        reason: err.message,
-        errorCode: 'FILE_READ_FAILED'
-      });
-      this.broadcast({
-        type: 'TRANSFER_FAILED',
-        payload: { error: err.message, code: 'FILE_READ_FAILED' },
-        timestamp: Date.now()
-      });
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        callback(null, chunk);
       }
-      res.end('File streaming error');
     });
 
-    stream.pipe(res);
+    const cleanup = () => {
+      if (!stream.destroyed) stream.destroy();
+      if (!trackerTransform.destroyed) trackerTransform.destroy();
+    };
+
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+
+    pipeline(stream, trackerTransform, res, (err) => {
+      cleanup();
+      if (err && !res.writableEnded && !res.destroyed) {
+        this.stateMachine.transitionTo('FAILED', {
+          reason: err.message,
+          errorCode: 'FILE_READ_FAILED'
+        });
+        this.broadcast({
+          type: 'TRANSFER_FAILED',
+          payload: { error: err.message, code: 'FILE_READ_FAILED' },
+          timestamp: Date.now()
+        });
+      }
+    });
   }
 
   /**

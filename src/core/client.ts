@@ -2,6 +2,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
+import { pipeline, Transform } from 'stream';
 import WebSocket from 'ws';
 import {
   PublicFileItem,
@@ -35,6 +36,11 @@ export class ReceiverClient extends EventEmitter {
   private currentFilePath: string | null = null;
   private ws: WebSocket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private httpAgent: http.Agent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 1,
+    keepAliveMsecs: 10000
+  });
 
   public static async fetchManifest(ip: string, port: number, token: string): Promise<TransferManifest> {
     return new Promise((resolve, reject) => {
@@ -86,9 +92,9 @@ export class ReceiverClient extends EventEmitter {
     const totalFiles = manifest.files.length;
     const totalBytes = manifest.totalBytes;
     let totalBytesDownloaded = 0;
-    let startTime = Date.now();
     let lastBytesSample = 0;
     let lastTimeSample = Date.now();
+    let lastProgressEmitTime = 0;
     let currentSpeed = 0;
 
     try {
@@ -122,26 +128,47 @@ export class ReceiverClient extends EventEmitter {
               lastTimeSample = now;
             }
 
-            const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
-            const etaSeconds = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
-            const percentage = totalBytes > 0 ? Math.min(100, (totalBytesDownloaded / totalBytes) * 100) : 100;
+            // Throttle progress updates to avoid saturating Electron IPC and event loop
+            if (now - lastProgressEmitTime >= 100) {
+              lastProgressEmitTime = now;
+              const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
+              const etaSeconds = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
+              const percentage = totalBytes > 0 ? Math.min(100, (totalBytesDownloaded / totalBytes) * 100) : 100;
 
-            const progress: ReceiverProgressUpdate = {
-              currentFileIndex: i + 1,
-              totalFiles,
-              currentFileName: file.name,
-              currentFileBytesDownloaded: fileBytesDownloaded,
-              currentFileTotalBytes: file.size,
-              totalBytesDownloaded,
-              totalBytes,
-              speedBps: currentSpeed,
-              etaSeconds,
-              percentage
-            };
+              const progress: ReceiverProgressUpdate = {
+                currentFileIndex: i + 1,
+                totalFiles,
+                currentFileName: file.name,
+                currentFileBytesDownloaded: fileBytesDownloaded,
+                currentFileTotalBytes: file.size,
+                totalBytesDownloaded,
+                totalBytes,
+                speedBps: currentSpeed,
+                etaSeconds,
+                percentage
+              };
 
-            this.emit('progress', progress);
+              this.emit('progress', progress);
+            }
           }
         );
+
+        // Always emit progress event on file completion
+        const remainingBytes = Math.max(0, totalBytes - totalBytesDownloaded);
+        const etaSeconds = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
+        const percentage = totalBytes > 0 ? Math.min(100, (totalBytesDownloaded / totalBytes) * 100) : 100;
+        this.emit('progress', {
+          currentFileIndex: i + 1,
+          totalFiles,
+          currentFileName: file.name,
+          currentFileBytesDownloaded: fileBytesDownloaded,
+          currentFileTotalBytes: file.size,
+          totalBytesDownloaded,
+          totalBytes,
+          speedBps: currentSpeed,
+          etaSeconds,
+          percentage
+        });
       }
 
       // Notify sender completion
@@ -177,36 +204,54 @@ export class ReceiverClient extends EventEmitter {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = `http://${ip}:${port}/api/transfer/${token}/file/${file.id}`;
-      const writeStream = fs.createWriteStream(targetPath, { flags: 'w' });
+      const writeStream = fs.createWriteStream(targetPath, {
+        flags: 'w',
+        highWaterMark: 1024 * 1024 // 1MB buffer for fast 100MB+/s disk writes
+      });
       this.currentWriteStream = writeStream;
 
-      const req = http.get(url, (res) => {
+      const progressTransform = new Transform({
+        transform(chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: Buffer) => void) {
+          onChunk(chunk.length);
+          callback(null, chunk);
+        }
+      });
+
+      const req = http.get(url, { agent: this.httpAgent }, (res) => {
         if (res.statusCode !== 200 && res.statusCode !== 206) {
-          writeStream.close();
+          writeStream.destroy();
+          progressTransform.destroy();
           reject(new Error(`Download failed with HTTP ${res.statusCode} for file ${file.name}`));
           return;
         }
 
-        res.on('data', (chunk: Buffer) => {
-          onChunk(chunk.length);
-        });
-
-        res.pipe(writeStream);
-
-        writeStream.on('finish', () => {
+        pipeline(res, progressTransform, writeStream, (err) => {
           this.currentWriteStream = null;
-          resolve();
+          this.currentRequest = null;
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
         });
+      });
 
-        writeStream.on('error', (err) => {
-          reject(err);
-        });
+      req.on('socket', (socket) => {
+        socket.setNoDelay(true);
+        socket.setKeepAlive(true);
+      });
+
+      req.setTimeout(60000, () => {
+        req.destroy(new Error(`Download timed out for file ${file.name}`));
       });
 
       this.currentRequest = req;
 
       req.on('error', (err) => {
-        writeStream.close();
+        writeStream.destroy();
+        progressTransform.destroy();
+        this.currentWriteStream = null;
+        this.currentRequest = null;
         reject(err);
       });
     });
